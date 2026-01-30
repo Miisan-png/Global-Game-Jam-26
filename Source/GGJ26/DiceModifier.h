@@ -51,6 +51,12 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Modifier")
 	bool bIsHighlighted;
 
+	UPROPERTY(BlueprintReadOnly, Category = "Modifier")
+	bool bIsActive;
+
+	UFUNCTION(BlueprintCallable)
+	void SetActive(bool bActive);
+
 	UFUNCTION(BlueprintCallable)
 	void SetHighlighted(bool bHighlight);
 
@@ -71,4 +77,8 @@ private:
 	FLinearColor BaseColor;
 	FLinearColor HighlightColor;
 	FLinearColor UsedColor;
+	FLinearColor InactiveColor;
+
+	float ActivationProgress;
+	bool bActivating;
 };

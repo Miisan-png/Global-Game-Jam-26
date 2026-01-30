@@ -172,4 +172,36 @@ private:
 	int32 SelectionMode;
 	int32 HoveredEnemyIndex;
 	int32 HoveredModifierIndex;
+
+	bool bIsDragging;
+	ADice* DraggedDice;
+	int32 DraggedDiceIndex;
+	FVector DragOffset;
+	FVector OriginalDragPosition;
+
+	void OnMousePressed();
+	void OnMouseReleased();
+	void UpdateMouseInput();
+	AActor* GetActorUnderMouse(FVector& HitLocation);
+	FVector GetMouseWorldPosition();
+	void StartDragging(ADice* Dice, int32 Index);
+	void StopDragging();
+	void UpdateDragging();
+	void HighlightValidTargets();
+	void ClearAllHighlights();
+
+	void ActivateModifiers();
+	void DeactivateModifiers();
+
+	void StartCameraPan();
+	void UpdateCameraPan(float DeltaTime);
+	void ResetCamera();
+
+	FVector OriginalCameraLocation;
+	FRotator OriginalCameraRotation;
+	FVector TargetCameraLocation;
+	FRotator TargetCameraRotation;
+	float CameraPanProgress;
+	bool bCameraPanning;
+	bool bCameraAtMatchView;
 };

@@ -41,6 +41,20 @@ ADiceGameManager::ADiceGameManager()
 	SelectionMode = 0;
 	HoveredEnemyIndex = -1;
 	HoveredModifierIndex = -1;
+
+	bIsDragging = false;
+	DraggedDice = nullptr;
+	DraggedDiceIndex = -1;
+	DragOffset = FVector::ZeroVector;
+	OriginalDragPosition = FVector::ZeroVector;
+
+	CameraPanProgress = 0.0f;
+	bCameraPanning = false;
+	bCameraAtMatchView = false;
+	OriginalCameraLocation = FVector::ZeroVector;
+	OriginalCameraRotation = FRotator::ZeroRotator;
+	TargetCameraLocation = FVector::ZeroVector;
+	TargetCameraRotation = FRotator::ZeroRotator;
 }
 
 void ADiceGameManager::BeginPlay()
@@ -69,7 +83,18 @@ void ADiceGameManager::SetupInputBindings()
 			InputComponent->BindKey(EKeys::Enter, IE_Pressed, this, &ADiceGameManager::OnConfirmSelection);
 			InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &ADiceGameManager::OnCancelSelection);
 			InputComponent->BindKey(EKeys::Q, IE_Pressed, this, &ADiceGameManager::OnCancelSelection);
+
+			InputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ADiceGameManager::OnMousePressed);
+			InputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ADiceGameManager::OnMouseReleased);
 		}
+	}
+
+	APlayerController* PCursor = UGameplayStatics::GetPlayerController(this, 0);
+	if (PCursor)
+	{
+		PCursor->bShowMouseCursor = true;
+		PCursor->bEnableClickEvents = true;
+		PCursor->bEnableMouseOverEvents = true;
 	}
 }
 
@@ -115,6 +140,13 @@ void ADiceGameManager::Tick(float DeltaTime)
 
 		case EGamePhase::PlayerMatching:
 			UpdateMatchingPhase();
+			UpdateMouseInput();
+			UpdateCameraPan(DeltaTime);
+			break;
+
+		case EGamePhase::RoundEnd:
+		case EGamePhase::GameOver:
+			UpdateCameraPan(DeltaTime);
 			break;
 
 		default:
@@ -488,7 +520,7 @@ void ADiceGameManager::PlayerThrowDice()
 	FVector CamLocation = Cam->Camera->GetComponentLocation();
 	FVector CamForward = Cam->Camera->GetForwardVector();
 	FVector CamRight = Cam->Camera->GetRightVector();
-	FVector SpawnBase = CamLocation + CamForward * 50.0f - FVector(0, 0, 20.0f);
+	FVector SpawnBase = CamLocation + CamForward * 80.0f + FVector(0, 0, 30.0f);
 
 	CurrentPhase = EGamePhase::PlayerThrowing;
 
@@ -516,7 +548,7 @@ void ADiceGameManager::PlayerThrowDice()
 		{
 			NewDice->bShowDebugNumbers = bShowDebugGizmos;
 
-			FVector ThrowDirection = CamForward + FVector(0, 0, -0.3f);
+			FVector ThrowDirection = CamForward + FVector(0, 0, 0.1f);
 			ThrowDirection += FVector(
 				FMath::RandRange(-0.1f, 0.1f),
 				FMath::RandRange(-0.1f, 0.1f),
@@ -658,6 +690,9 @@ void ADiceGameManager::StartMatchingPhase()
 
 	SelectDice(SelectedDiceIndex);
 	UpdateSelectionHighlights();
+
+	ActivateModifiers();
+	StartCameraPan();
 }
 
 void ADiceGameManager::UpdateMatchingPhase()
@@ -807,6 +842,9 @@ void ADiceGameManager::CheckAllMatched()
 		DealDamage(true);
 		CheckGameOver();
 
+		DeactivateModifiers();
+		ResetCamera();
+
 		if (CurrentPhase != EGamePhase::GameOver)
 		{
 			CurrentPhase = EGamePhase::RoundEnd;
@@ -889,10 +927,10 @@ void ADiceGameManager::DrawTurnText()
 			Color = FColor::Cyan;
 			break;
 		case EGamePhase::PlayerMatching:
-			if (SelectionMode == 0)
-				Text = "Select YOUR dice (A/D) then SPACE";
+			if (bIsDragging)
+				Text = "Drag to ENEMY dice to match, or MODIFIER to use";
 			else
-				Text = "Select TARGET (A/D) then SPACE | Q to cancel";
+				Text = "Click and DRAG your dice!";
 			Color = FColor::Yellow;
 			break;
 		case EGamePhase::RoundEnd:
@@ -971,4 +1009,347 @@ ADiceCamera* ADiceGameManager::FindCamera()
 	TArray<AActor*> Cameras;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), ADiceCamera::StaticClass(), Cameras);
 	return (Cameras.Num() > 0) ? Cast<ADiceCamera>(Cameras[0]) : nullptr;
+}
+
+void ADiceGameManager::OnMousePressed()
+{
+	if (CurrentPhase != EGamePhase::PlayerMatching) return;
+
+	FVector HitLocation;
+	AActor* HitActor = GetActorUnderMouse(HitLocation);
+
+	if (!HitActor) return;
+
+	ADice* HitDice = Cast<ADice>(HitActor);
+	if (HitDice)
+	{
+		for (int32 i = 0; i < PlayerDice.Num(); i++)
+		{
+			if (PlayerDice[i] == HitDice && !PlayerDiceMatched[i])
+			{
+				StartDragging(HitDice, i);
+				return;
+			}
+		}
+	}
+}
+
+void ADiceGameManager::OnMouseReleased()
+{
+	if (!bIsDragging || CurrentPhase != EGamePhase::PlayerMatching)
+	{
+		StopDragging();
+		return;
+	}
+
+	FVector HitLocation;
+	AActor* HitActor = GetActorUnderMouse(HitLocation);
+
+	bool bSuccess = false;
+
+	if (HitActor)
+	{
+		ADice* HitDice = Cast<ADice>(HitActor);
+		if (HitDice)
+		{
+			for (int32 i = 0; i < EnemyDice.Num(); i++)
+			{
+				if (EnemyDice[i] == HitDice && !EnemyDiceMatched[i])
+				{
+					TryMatchDice(DraggedDiceIndex, i);
+					bSuccess = true;
+					break;
+				}
+			}
+		}
+
+		ADiceModifier* HitMod = Cast<ADiceModifier>(HitActor);
+		if (HitMod && !HitMod->bIsUsed)
+		{
+			SelectedDiceIndex = DraggedDiceIndex;
+			TryApplyModifier(HitMod);
+			bSuccess = true;
+		}
+	}
+
+	if (!bSuccess && DraggedDice)
+	{
+		DraggedDice->SetActorLocation(OriginalDragPosition);
+	}
+
+	StopDragging();
+}
+
+void ADiceGameManager::UpdateMouseInput()
+{
+	if (bIsDragging)
+	{
+		UpdateDragging();
+		HighlightValidTargets();
+	}
+	else
+	{
+		FVector HitLocation;
+		AActor* HitActor = GetActorUnderMouse(HitLocation);
+
+		ClearAllHighlights();
+
+		if (HitActor)
+		{
+			ADice* HitDice = Cast<ADice>(HitActor);
+			if (HitDice)
+			{
+				for (int32 i = 0; i < PlayerDice.Num(); i++)
+				{
+					if (PlayerDice[i] == HitDice && !PlayerDiceMatched[i])
+					{
+						HitDice->SetHighlighted(true);
+						break;
+					}
+				}
+			}
+		}
+	}
+}
+
+AActor* ADiceGameManager::GetActorUnderMouse(FVector& HitLocation)
+{
+	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+	if (!PC) return nullptr;
+
+	FVector WorldLocation, WorldDirection;
+	if (!PC->DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
+		return nullptr;
+
+	FHitResult HitResult;
+	FVector TraceEnd = WorldLocation + WorldDirection * 10000.0f;
+
+	FCollisionQueryParams Params;
+	Params.AddIgnoredActor(this);
+	if (DraggedDice) Params.AddIgnoredActor(DraggedDice);
+
+	if (GetWorld()->LineTraceSingleByChannel(HitResult, WorldLocation, TraceEnd, ECC_Visibility, Params))
+	{
+		HitLocation = HitResult.Location;
+		return HitResult.GetActor();
+	}
+
+	return nullptr;
+}
+
+FVector ADiceGameManager::GetMouseWorldPosition()
+{
+	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+	if (!PC) return FVector::ZeroVector;
+
+	FVector WorldLocation, WorldDirection;
+	if (!PC->DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
+		return FVector::ZeroVector;
+
+	FPlane TablePlane(FVector(0, 0, 20), FVector::UpVector);
+	FVector Intersection;
+
+	if (FMath::SegmentPlaneIntersection(WorldLocation, WorldLocation + WorldDirection * 10000.0f, TablePlane, Intersection))
+	{
+		return Intersection;
+	}
+
+	return WorldLocation + WorldDirection * 500.0f;
+}
+
+void ADiceGameManager::StartDragging(ADice* Dice, int32 Index)
+{
+	bIsDragging = true;
+	DraggedDice = Dice;
+	DraggedDiceIndex = Index;
+	OriginalDragPosition = Dice->GetActorLocation();
+
+	FVector MouseWorld = GetMouseWorldPosition();
+	DragOffset = OriginalDragPosition - MouseWorld;
+
+	Dice->SetHighlighted(true);
+}
+
+void ADiceGameManager::StopDragging()
+{
+	if (DraggedDice)
+	{
+		DraggedDice->SetHighlighted(false);
+
+		FRotator CleanRot = DraggedDice->GetActorRotation();
+		CleanRot.Roll = FMath::RoundToFloat(CleanRot.Roll / 90.0f) * 90.0f;
+		CleanRot.Pitch = FMath::RoundToFloat(CleanRot.Pitch / 90.0f) * 90.0f;
+		DraggedDice->SetActorRotation(CleanRot);
+	}
+
+	bIsDragging = false;
+	DraggedDice = nullptr;
+	DraggedDiceIndex = -1;
+	DragOffset = FVector::ZeroVector;
+
+	ClearAllHighlights();
+}
+
+void ADiceGameManager::UpdateDragging()
+{
+	if (!DraggedDice) return;
+
+	FVector MouseWorld = GetMouseWorldPosition();
+	FVector TargetPosition = MouseWorld + DragOffset;
+	TargetPosition.Z = OriginalDragPosition.Z + 40.0f;
+
+	FVector CurrentPos = DraggedDice->GetActorLocation();
+	FVector NewPosition = FMath::VInterpTo(CurrentPos, TargetPosition, GetWorld()->GetDeltaSeconds(), 15.0f);
+
+	DraggedDice->SetActorLocation(NewPosition);
+
+	FRotator CurrentRot = DraggedDice->GetActorRotation();
+	FVector Velocity = NewPosition - CurrentPos;
+	float TiltAmount = 8.0f;
+	FRotator TargetRot = CurrentRot;
+	TargetRot.Roll = FMath::Clamp(Velocity.Y * TiltAmount, -15.0f, 15.0f);
+	TargetRot.Pitch = FMath::Clamp(-Velocity.X * TiltAmount, -15.0f, 15.0f);
+
+	FRotator NewRot = FMath::RInterpTo(CurrentRot, TargetRot, GetWorld()->GetDeltaSeconds(), 10.0f);
+	DraggedDice->SetActorRotation(NewRot);
+}
+
+void ADiceGameManager::HighlightValidTargets()
+{
+	if (!DraggedDice || DraggedDiceIndex < 0) return;
+
+	int32 DraggedValue = PlayerResults[DraggedDiceIndex];
+
+	for (int32 i = 0; i < EnemyDice.Num(); i++)
+	{
+		if (EnemyDice[i] && !EnemyDiceMatched[i])
+		{
+			bool bCanMatch = (EnemyResults[i] == DraggedValue);
+			EnemyDice[i]->SetHighlighted(bCanMatch);
+		}
+	}
+
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod && !Mod->bIsUsed)
+		{
+			Mod->SetHighlighted(true);
+		}
+	}
+}
+
+void ADiceGameManager::ClearAllHighlights()
+{
+	for (ADice* D : PlayerDice)
+	{
+		if (D) D->SetHighlighted(false);
+	}
+	for (ADice* D : EnemyDice)
+	{
+		if (D) D->SetHighlighted(false);
+	}
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod) Mod->SetHighlighted(false);
+	}
+}
+
+void ADiceGameManager::ActivateModifiers()
+{
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod && !Mod->bIsUsed)
+		{
+			Mod->SetActive(true);
+		}
+	}
+}
+
+void ADiceGameManager::DeactivateModifiers()
+{
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod)
+		{
+			Mod->SetActive(false);
+		}
+	}
+}
+
+void ADiceGameManager::StartCameraPan()
+{
+	ADiceCamera* Cam = FindCamera();
+	if (!Cam) return;
+
+	if (!bCameraAtMatchView)
+	{
+		OriginalCameraLocation = Cam->GetActorLocation();
+		OriginalCameraRotation = Cam->GetActorRotation();
+	}
+
+	FVector DiceCenter = FVector::ZeroVector;
+	int32 DiceCount = 0;
+
+	for (ADice* D : PlayerDice)
+	{
+		if (D)
+		{
+			DiceCenter += D->GetActorLocation();
+			DiceCount++;
+		}
+	}
+	for (ADice* D : EnemyDice)
+	{
+		if (D)
+		{
+			DiceCenter += D->GetActorLocation();
+			DiceCount++;
+		}
+	}
+
+	if (DiceCount > 0)
+	{
+		DiceCenter /= DiceCount;
+	}
+
+	TargetCameraLocation = DiceCenter + FVector(-80.0f, 0, 150.0f);
+	TargetCameraRotation = FRotator(-50.0f, OriginalCameraRotation.Yaw, 0);
+
+	CameraPanProgress = 0.0f;
+	bCameraPanning = true;
+	bCameraAtMatchView = true;
+}
+
+void ADiceGameManager::UpdateCameraPan(float DeltaTime)
+{
+	if (!bCameraPanning) return;
+
+	ADiceCamera* Cam = FindCamera();
+	if (!Cam) return;
+
+	CameraPanProgress += DeltaTime * 2.0f;
+	float Alpha = FMath::Clamp(CameraPanProgress, 0.0f, 1.0f);
+	float SmoothAlpha = FMath::InterpEaseInOut(0.0f, 1.0f, Alpha, 2.0f);
+
+	FVector NewLoc = FMath::Lerp(Cam->GetActorLocation(),
+		bCameraAtMatchView ? TargetCameraLocation : OriginalCameraLocation,
+		SmoothAlpha * 0.1f);
+	FRotator NewRot = FMath::Lerp(Cam->GetActorRotation(),
+		bCameraAtMatchView ? TargetCameraRotation : OriginalCameraRotation,
+		SmoothAlpha * 0.1f);
+
+	Cam->SetActorLocation(NewLoc);
+	Cam->SetActorRotation(NewRot);
+
+	if (CameraPanProgress >= 1.5f)
+	{
+		bCameraPanning = false;
+	}
+}
+
+void ADiceGameManager::ResetCamera()
+{
+	bCameraAtMatchView = false;
+	CameraPanProgress = 0.0f;
+	bCameraPanning = true;
 }

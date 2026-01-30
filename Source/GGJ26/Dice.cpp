@@ -28,6 +28,8 @@ ADice::ADice()
 
 	Mesh->SetLinearDamping(0.5f);
 	Mesh->SetAngularDamping(0.5f);
+	Mesh->SetCollisionObjectType(ECC_PhysicsBody);
+	Mesh->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 
 	bHasBeenThrown = false;
 	bIsHighlighted = false;

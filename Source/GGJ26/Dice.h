@@ -23,6 +23,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float DiceSize;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
+	bool bShowDebugNumbers;
+
 	UFUNCTION(BlueprintCallable)
 	void Throw(FVector Direction, float Force);
 
@@ -34,4 +37,9 @@ public:
 
 private:
 	bool bHasBeenThrown;
+
+	void DrawFaceNumbers();
+	int32 GetFaceValueFromDirection(FVector LocalDirection);
+	FVector GetFaceCenter(int32 FaceIndex);
+	FVector GetFaceNormal(int32 FaceIndex);
 };

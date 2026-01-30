@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Dice.h"
+#include "DiceModifier.h"
 #include "DiceGameManager.generated.h"
 
 class AMaskEnemy;
@@ -19,7 +20,9 @@ enum class EGamePhase : uint8
 	PlayerThrowing,
 	PlayerDiceSettling,
 	PlayerDiceLining,
-	RoundEnd
+	PlayerMatching,
+	RoundEnd,
+	GameOver
 };
 
 UCLASS()
@@ -66,6 +69,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	bool bShowDebugGizmos;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
+	int32 PlayerHealth;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
+	int32 EnemyHealth;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
+	int32 MaxHealth;
+
 	UPROPERTY(BlueprintReadOnly, Category = "State")
 	EGamePhase CurrentPhase;
 
@@ -81,6 +93,15 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "State")
 	TArray<int32> PlayerResults;
 
+	UPROPERTY(BlueprintReadOnly, Category = "State")
+	ADice* SelectedPlayerDice;
+
+	UPROPERTY(BlueprintReadOnly, Category = "State")
+	int32 SelectedDiceIndex;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Modifiers")
+	TArray<ADiceModifier*> AllModifiers;
+
 	UFUNCTION(BlueprintCallable)
 	void StartGame();
 
@@ -92,19 +113,36 @@ private:
 	void OnStartGamePressed();
 	void OnPlayerThrowPressed();
 	void OnToggleDebugPressed();
+	void OnSelectNext();
+	void OnSelectPrev();
+	void OnConfirmSelection();
+	void OnCancelSelection();
 	void UpdateDiceDebugVisibility();
 
 	void EnemyThrowDice();
 	void CheckEnemyDiceSettled(float DeltaTime);
+	void PrepareEnemyDiceLineup();
 	void LineUpEnemyDice(float DeltaTime);
 	void StartPlayerTurn();
 	void CheckPlayerDiceSettled();
 	void PreparePlayerDiceLineup();
 	void LineUpPlayerDice(float DeltaTime);
 
+	void StartMatchingPhase();
+	void UpdateMatchingPhase();
+	void SelectDice(int32 Index);
+	void TryMatchDice(int32 PlayerIndex, int32 EnemyIndex);
+	void TryApplyModifier(ADiceModifier* Modifier);
+	void UpdateSelectionHighlights();
+	void CheckAllMatched();
+	void DealDamage(bool bToEnemy);
+	void CheckGameOver();
+
+	void FindAllModifiers();
 	void ClearAllDice();
 	void DrawTurnText();
-	void PrepareEnemyDiceLineup();
+	void DrawHealthBars();
+
 	FRotator GetRotationForFaceUp(int32 FaceValue);
 	float SmoothStep(float t);
 	float EaseOutCubic(float t);
@@ -115,6 +153,7 @@ private:
 	bool bEnemyDiceSettled;
 	bool bPlayerDiceSettled;
 	float LineupProgress;
+	float PlayerLineupProgress;
 	float WaitTimer;
 	float StaggerDelay;
 
@@ -123,9 +162,14 @@ private:
 	TArray<FVector> EnemyDiceTargetPositions;
 	TArray<FRotator> EnemyDiceTargetRotations;
 
-	float PlayerLineupProgress;
 	TArray<FVector> PlayerDiceStartPositions;
 	TArray<FRotator> PlayerDiceStartRotations;
 	TArray<FVector> PlayerDiceTargetPositions;
 	TArray<FRotator> PlayerDiceTargetRotations;
+
+	TArray<bool> PlayerDiceMatched;
+	TArray<bool> EnemyDiceMatched;
+	int32 SelectionMode;
+	int32 HoveredEnemyIndex;
+	int32 HoveredModifierIndex;
 };

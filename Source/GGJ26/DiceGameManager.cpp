@@ -17,12 +17,16 @@ ADiceGameManager::ADiceGameManager()
 	EnemyDiceSpawnOffset = FVector(0.0f, 0.0f, 80.0f);
 	DiceLineupSpacing = 20.0f;
 	DiceLineupSpeed = 2.0f;
-	StaggerDelay = 0.12f;
 	EnemyDiceOffsetY = 0.0f;
 	PlayerDiceOffsetY = 0.0f;
 	DiceHeightAboveTable = 0.0f;
+	StaggerDelay = 0.12f;
 
 	TableActor = nullptr;
+
+	MaxHealth = 5;
+	PlayerHealth = 5;
+	EnemyHealth = 5;
 
 	CurrentPhase = EGamePhase::Idle;
 	bEnemyDiceSettled = false;
@@ -31,12 +35,19 @@ ADiceGameManager::ADiceGameManager()
 	PlayerLineupProgress = 0.0f;
 	WaitTimer = 0.0f;
 	bShowDebugGizmos = true;
+
+	SelectedPlayerDice = nullptr;
+	SelectedDiceIndex = -1;
+	SelectionMode = 0;
+	HoveredEnemyIndex = -1;
+	HoveredModifierIndex = -1;
 }
 
 void ADiceGameManager::BeginPlay()
 {
 	Super::BeginPlay();
 	SetupInputBindings();
+	FindAllModifiers();
 }
 
 void ADiceGameManager::SetupInputBindings()
@@ -50,6 +61,29 @@ void ADiceGameManager::SetupInputBindings()
 			InputComponent->BindKey(EKeys::G, IE_Pressed, this, &ADiceGameManager::OnStartGamePressed);
 			InputComponent->BindKey(EKeys::E, IE_Pressed, this, &ADiceGameManager::OnPlayerThrowPressed);
 			InputComponent->BindKey(EKeys::T, IE_Pressed, this, &ADiceGameManager::OnToggleDebugPressed);
+			InputComponent->BindKey(EKeys::A, IE_Pressed, this, &ADiceGameManager::OnSelectPrev);
+			InputComponent->BindKey(EKeys::D, IE_Pressed, this, &ADiceGameManager::OnSelectNext);
+			InputComponent->BindKey(EKeys::Left, IE_Pressed, this, &ADiceGameManager::OnSelectPrev);
+			InputComponent->BindKey(EKeys::Right, IE_Pressed, this, &ADiceGameManager::OnSelectNext);
+			InputComponent->BindKey(EKeys::SpaceBar, IE_Pressed, this, &ADiceGameManager::OnConfirmSelection);
+			InputComponent->BindKey(EKeys::Enter, IE_Pressed, this, &ADiceGameManager::OnConfirmSelection);
+			InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &ADiceGameManager::OnCancelSelection);
+			InputComponent->BindKey(EKeys::Q, IE_Pressed, this, &ADiceGameManager::OnCancelSelection);
+		}
+	}
+}
+
+void ADiceGameManager::FindAllModifiers()
+{
+	AllModifiers.Empty();
+	TArray<AActor*> FoundModifiers;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), ADiceModifier::StaticClass(), FoundModifiers);
+	for (AActor* A : FoundModifiers)
+	{
+		ADiceModifier* Mod = Cast<ADiceModifier>(A);
+		if (Mod)
+		{
+			AllModifiers.Add(Mod);
 		}
 	}
 }
@@ -59,6 +93,7 @@ void ADiceGameManager::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 
 	DrawTurnText();
+	DrawHealthBars();
 
 	switch (CurrentPhase)
 	{
@@ -78,6 +113,10 @@ void ADiceGameManager::Tick(float DeltaTime)
 			LineUpPlayerDice(DeltaTime);
 			break;
 
+		case EGamePhase::PlayerMatching:
+			UpdateMatchingPhase();
+			break;
+
 		default:
 			break;
 	}
@@ -87,6 +126,19 @@ void ADiceGameManager::OnStartGamePressed()
 {
 	if (CurrentPhase == EGamePhase::Idle || CurrentPhase == EGamePhase::RoundEnd)
 	{
+		StartGame();
+	}
+	else if (CurrentPhase == EGamePhase::GameOver)
+	{
+		PlayerHealth = MaxHealth;
+		EnemyHealth = MaxHealth;
+		for (ADiceModifier* Mod : AllModifiers)
+		{
+			if (Mod)
+			{
+				Mod->bIsUsed = false;
+			}
+		}
 		StartGame();
 	}
 }
@@ -105,22 +157,122 @@ void ADiceGameManager::OnToggleDebugPressed()
 	UpdateDiceDebugVisibility();
 }
 
+void ADiceGameManager::OnSelectNext()
+{
+	if (CurrentPhase != EGamePhase::PlayerMatching) return;
+
+	if (SelectionMode == 0)
+	{
+		int32 StartIndex = SelectedDiceIndex;
+		do {
+			SelectedDiceIndex = (SelectedDiceIndex + 1) % PlayerDice.Num();
+		} while (PlayerDiceMatched.IsValidIndex(SelectedDiceIndex) &&
+				 PlayerDiceMatched[SelectedDiceIndex] &&
+				 SelectedDiceIndex != StartIndex);
+
+		SelectDice(SelectedDiceIndex);
+	}
+	else if (SelectionMode == 1)
+	{
+		int32 TotalOptions = EnemyDice.Num() + AllModifiers.Num();
+		int32 CurrentOption = (HoveredEnemyIndex >= 0) ? HoveredEnemyIndex : (EnemyDice.Num() + HoveredModifierIndex);
+		CurrentOption = (CurrentOption + 1) % TotalOptions;
+
+		if (CurrentOption < EnemyDice.Num())
+		{
+			HoveredEnemyIndex = CurrentOption;
+			HoveredModifierIndex = -1;
+		}
+		else
+		{
+			HoveredEnemyIndex = -1;
+			HoveredModifierIndex = CurrentOption - EnemyDice.Num();
+		}
+	}
+	UpdateSelectionHighlights();
+}
+
+void ADiceGameManager::OnSelectPrev()
+{
+	if (CurrentPhase != EGamePhase::PlayerMatching) return;
+
+	if (SelectionMode == 0)
+	{
+		int32 StartIndex = SelectedDiceIndex;
+		do {
+			SelectedDiceIndex = (SelectedDiceIndex - 1 + PlayerDice.Num()) % PlayerDice.Num();
+		} while (PlayerDiceMatched.IsValidIndex(SelectedDiceIndex) &&
+				 PlayerDiceMatched[SelectedDiceIndex] &&
+				 SelectedDiceIndex != StartIndex);
+
+		SelectDice(SelectedDiceIndex);
+	}
+	else if (SelectionMode == 1)
+	{
+		int32 TotalOptions = EnemyDice.Num() + AllModifiers.Num();
+		int32 CurrentOption = (HoveredEnemyIndex >= 0) ? HoveredEnemyIndex : (EnemyDice.Num() + HoveredModifierIndex);
+		CurrentOption = (CurrentOption - 1 + TotalOptions) % TotalOptions;
+
+		if (CurrentOption < EnemyDice.Num())
+		{
+			HoveredEnemyIndex = CurrentOption;
+			HoveredModifierIndex = -1;
+		}
+		else
+		{
+			HoveredEnemyIndex = -1;
+			HoveredModifierIndex = CurrentOption - EnemyDice.Num();
+		}
+	}
+	UpdateSelectionHighlights();
+}
+
+void ADiceGameManager::OnConfirmSelection()
+{
+	if (CurrentPhase != EGamePhase::PlayerMatching) return;
+
+	if (SelectionMode == 0 && SelectedDiceIndex >= 0)
+	{
+		SelectionMode = 1;
+		HoveredEnemyIndex = 0;
+		HoveredModifierIndex = -1;
+		UpdateSelectionHighlights();
+	}
+	else if (SelectionMode == 1)
+	{
+		if (HoveredEnemyIndex >= 0)
+		{
+			TryMatchDice(SelectedDiceIndex, HoveredEnemyIndex);
+		}
+		else if (HoveredModifierIndex >= 0 && AllModifiers.IsValidIndex(HoveredModifierIndex))
+		{
+			TryApplyModifier(AllModifiers[HoveredModifierIndex]);
+		}
+	}
+}
+
+void ADiceGameManager::OnCancelSelection()
+{
+	if (CurrentPhase != EGamePhase::PlayerMatching) return;
+
+	if (SelectionMode == 1)
+	{
+		SelectionMode = 0;
+		HoveredEnemyIndex = -1;
+		HoveredModifierIndex = -1;
+		UpdateSelectionHighlights();
+	}
+}
+
 void ADiceGameManager::UpdateDiceDebugVisibility()
 {
 	for (ADice* D : EnemyDice)
 	{
-		if (D)
-		{
-			D->bShowDebugNumbers = bShowDebugGizmos;
-		}
+		if (D) D->bShowDebugNumbers = bShowDebugGizmos;
 	}
-
 	for (ADice* D : PlayerDice)
 	{
-		if (D)
-		{
-			D->bShowDebugNumbers = bShowDebugGizmos;
-		}
+		if (D) D->bShowDebugNumbers = bShowDebugGizmos;
 	}
 }
 
@@ -130,7 +282,13 @@ void ADiceGameManager::StartGame()
 
 	EnemyResults.Empty();
 	PlayerResults.Empty();
+	PlayerDiceMatched.Empty();
+	EnemyDiceMatched.Empty();
 	WaitTimer = 0.0f;
+	SelectionMode = 0;
+	SelectedDiceIndex = -1;
+	HoveredEnemyIndex = -1;
+	HoveredModifierIndex = -1;
 
 	CurrentPhase = EGamePhase::EnemyThrowing;
 	EnemyThrowDice();
@@ -139,8 +297,7 @@ void ADiceGameManager::StartGame()
 void ADiceGameManager::EnemyThrowDice()
 {
 	AMaskEnemy* Enemy = FindEnemy();
-	if (!Enemy)
-		return;
+	if (!Enemy) return;
 
 	FVector EnemyLocation = Enemy->GetActorLocation();
 	FVector SpawnBase = EnemyLocation + EnemyDiceSpawnOffset;
@@ -175,8 +332,7 @@ void ADiceGameManager::EnemyThrowDice()
 		{
 			NewDice->bShowDebugNumbers = bShowDebugGizmos;
 
-			FVector ThrowDirection = (ThrowTarget - SpawnLocation);
-			ThrowDirection.Normalize();
+			FVector ThrowDirection = (ThrowTarget - SpawnLocation).GetSafeNormal();
 			ThrowDirection += FVector(
 				FMath::RandRange(-0.15f, 0.15f),
 				FMath::RandRange(-0.15f, 0.15f),
@@ -196,7 +352,6 @@ void ADiceGameManager::EnemyThrowDice()
 void ADiceGameManager::CheckEnemyDiceSettled(float DeltaTime)
 {
 	bool AllSettled = true;
-
 	for (ADice* D : EnemyDice)
 	{
 		if (D && !D->IsStill())
@@ -235,21 +390,14 @@ void ADiceGameManager::PrepareEnemyDiceLineup()
 	FVector CenterPos = FVector::ZeroVector;
 	for (ADice* D : EnemyDice)
 	{
-		if (D)
-		{
-			CenterPos += D->GetActorLocation();
-		}
+		if (D) CenterPos += D->GetActorLocation();
 	}
-	if (EnemyDice.Num() > 0)
-	{
-		CenterPos /= EnemyDice.Num();
-	}
+	if (EnemyDice.Num() > 0) CenterPos /= EnemyDice.Num();
 
 	for (int32 i = 0; i < EnemyDice.Num(); i++)
 	{
 		ADice* D = EnemyDice[i];
-		if (!D)
-			continue;
+		if (!D) continue;
 
 		EnemyDiceStartPositions.Add(D->GetActorLocation());
 		EnemyDiceStartRotations.Add(D->GetActorRotation());
@@ -282,18 +430,15 @@ float ADiceGameManager::EaseOutCubic(float t)
 void ADiceGameManager::LineUpEnemyDice(float DeltaTime)
 {
 	LineupProgress += DeltaTime * DiceLineupSpeed;
-
 	bool AllDone = true;
 
 	for (int32 i = 0; i < EnemyDice.Num(); i++)
 	{
 		ADice* D = EnemyDice[i];
-		if (!D || i >= EnemyDiceStartPositions.Num())
-			continue;
+		if (!D || i >= EnemyDiceStartPositions.Num()) continue;
 
 		float DiceTime = LineupProgress - (i * StaggerDelay);
 		float Alpha = FMath::Clamp(DiceTime, 0.0f, 1.0f);
-
 		if (Alpha < 1.0f) AllDone = false;
 
 		float SmoothAlpha = EaseOutCubic(Alpha);
@@ -312,9 +457,12 @@ void ADiceGameManager::LineUpEnemyDice(float DeltaTime)
 		{
 			if (D)
 			{
-				EnemyResults.Add(D->GetResult());
+				int32 Result = D->GetResult();
+				EnemyResults.Add(Result);
+				D->CurrentValue = Result;
 			}
 		}
+		EnemyDiceMatched.Init(false, EnemyDice.Num());
 		WaitTimer = 0.0f;
 		StartPlayerTurn();
 	}
@@ -329,22 +477,17 @@ void ADiceGameManager::PlayerThrowDice()
 {
 	for (ADice* D : PlayerDice)
 	{
-		if (D && IsValid(D))
-		{
-			D->Destroy();
-		}
+		if (D && IsValid(D)) D->Destroy();
 	}
 	PlayerDice.Empty();
 	PlayerResults.Empty();
 
 	ADiceCamera* Cam = FindCamera();
-	if (!Cam)
-		return;
+	if (!Cam) return;
 
 	FVector CamLocation = Cam->Camera->GetComponentLocation();
 	FVector CamForward = Cam->Camera->GetForwardVector();
 	FVector CamRight = Cam->Camera->GetRightVector();
-
 	FVector SpawnBase = CamLocation + CamForward * 50.0f - FVector(0, 0, 20.0f);
 
 	CurrentPhase = EGamePhase::PlayerThrowing;
@@ -393,7 +536,6 @@ void ADiceGameManager::PlayerThrowDice()
 void ADiceGameManager::CheckPlayerDiceSettled()
 {
 	bool AllSettled = true;
-
 	for (ADice* D : PlayerDice)
 	{
 		if (D && !D->IsStill())
@@ -432,21 +574,14 @@ void ADiceGameManager::PreparePlayerDiceLineup()
 	FVector CenterPos = FVector::ZeroVector;
 	for (ADice* D : PlayerDice)
 	{
-		if (D)
-		{
-			CenterPos += D->GetActorLocation();
-		}
+		if (D) CenterPos += D->GetActorLocation();
 	}
-	if (PlayerDice.Num() > 0)
-	{
-		CenterPos /= PlayerDice.Num();
-	}
+	if (PlayerDice.Num() > 0) CenterPos /= PlayerDice.Num();
 
 	for (int32 i = 0; i < PlayerDice.Num(); i++)
 	{
 		ADice* D = PlayerDice[i];
-		if (!D)
-			continue;
+		if (!D) continue;
 
 		PlayerDiceStartPositions.Add(D->GetActorLocation());
 		PlayerDiceStartRotations.Add(D->GetActorRotation());
@@ -469,18 +604,15 @@ void ADiceGameManager::PreparePlayerDiceLineup()
 void ADiceGameManager::LineUpPlayerDice(float DeltaTime)
 {
 	PlayerLineupProgress += DeltaTime * DiceLineupSpeed;
-
 	bool AllDone = true;
 
 	for (int32 i = 0; i < PlayerDice.Num(); i++)
 	{
 		ADice* D = PlayerDice[i];
-		if (!D || i >= PlayerDiceStartPositions.Num())
-			continue;
+		if (!D || i >= PlayerDiceStartPositions.Num()) continue;
 
 		float DiceTime = PlayerLineupProgress - (i * StaggerDelay);
 		float Alpha = FMath::Clamp(DiceTime, 0.0f, 1.0f);
-
 		if (Alpha < 1.0f) AllDone = false;
 
 		float SmoothAlpha = EaseOutCubic(Alpha);
@@ -499,10 +631,206 @@ void ADiceGameManager::LineUpPlayerDice(float DeltaTime)
 		{
 			if (D)
 			{
-				PlayerResults.Add(D->GetResult());
+				int32 Result = D->GetResult();
+				PlayerResults.Add(Result);
+				D->CurrentValue = Result;
 			}
 		}
-		CurrentPhase = EGamePhase::RoundEnd;
+		PlayerDiceMatched.Init(false, PlayerDice.Num());
+		StartMatchingPhase();
+	}
+}
+
+void ADiceGameManager::StartMatchingPhase()
+{
+	CurrentPhase = EGamePhase::PlayerMatching;
+	SelectionMode = 0;
+	SelectedDiceIndex = 0;
+
+	for (int32 i = 0; i < PlayerDiceMatched.Num(); i++)
+	{
+		if (!PlayerDiceMatched[i])
+		{
+			SelectedDiceIndex = i;
+			break;
+		}
+	}
+
+	SelectDice(SelectedDiceIndex);
+	UpdateSelectionHighlights();
+}
+
+void ADiceGameManager::UpdateMatchingPhase()
+{
+	UpdateSelectionHighlights();
+}
+
+void ADiceGameManager::SelectDice(int32 Index)
+{
+	SelectedDiceIndex = Index;
+	if (PlayerDice.IsValidIndex(Index))
+	{
+		SelectedPlayerDice = PlayerDice[Index];
+	}
+	else
+	{
+		SelectedPlayerDice = nullptr;
+	}
+}
+
+void ADiceGameManager::UpdateSelectionHighlights()
+{
+	for (int32 i = 0; i < PlayerDice.Num(); i++)
+	{
+		if (PlayerDice[i])
+		{
+			bool bHighlight = (i == SelectedDiceIndex && SelectionMode == 0);
+			PlayerDice[i]->SetHighlighted(bHighlight);
+		}
+	}
+
+	for (int32 i = 0; i < EnemyDice.Num(); i++)
+	{
+		if (EnemyDice[i])
+		{
+			bool bHighlight = (i == HoveredEnemyIndex && SelectionMode == 1);
+			EnemyDice[i]->SetHighlighted(bHighlight);
+		}
+	}
+
+	for (int32 i = 0; i < AllModifiers.Num(); i++)
+	{
+		if (AllModifiers[i])
+		{
+			bool bHighlight = (i == HoveredModifierIndex && SelectionMode == 1);
+			AllModifiers[i]->SetHighlighted(bHighlight);
+		}
+	}
+}
+
+void ADiceGameManager::TryMatchDice(int32 PlayerIndex, int32 EnemyIndex)
+{
+	if (!PlayerDice.IsValidIndex(PlayerIndex) || !EnemyDice.IsValidIndex(EnemyIndex)) return;
+	if (PlayerDiceMatched[PlayerIndex] || EnemyDiceMatched[EnemyIndex]) return;
+
+	int32 PlayerVal = PlayerResults[PlayerIndex];
+	int32 EnemyVal = EnemyResults[EnemyIndex];
+
+	if (PlayerVal == EnemyVal)
+	{
+		PlayerDiceMatched[PlayerIndex] = true;
+		EnemyDiceMatched[EnemyIndex] = true;
+
+		PlayerDice[PlayerIndex]->SetMatched(true);
+		EnemyDice[EnemyIndex]->SetMatched(true);
+
+		SelectionMode = 0;
+		HoveredEnemyIndex = -1;
+		HoveredModifierIndex = -1;
+
+		CheckAllMatched();
+
+		if (CurrentPhase == EGamePhase::PlayerMatching)
+		{
+			for (int32 i = 0; i < PlayerDiceMatched.Num(); i++)
+			{
+				if (!PlayerDiceMatched[i])
+				{
+					SelectedDiceIndex = i;
+					SelectDice(i);
+					break;
+				}
+			}
+		}
+		UpdateSelectionHighlights();
+	}
+}
+
+void ADiceGameManager::TryApplyModifier(ADiceModifier* Modifier)
+{
+	if (!Modifier || Modifier->bIsUsed) return;
+	if (!PlayerDice.IsValidIndex(SelectedDiceIndex)) return;
+	if (PlayerDiceMatched[SelectedDiceIndex]) return;
+
+	int32 OldValue = PlayerResults[SelectedDiceIndex];
+	int32 NewValue = Modifier->ApplyToValue(OldValue);
+
+	if (Modifier->ModifierType == EModifierType::RerollOne)
+	{
+		NewValue = FMath::RandRange(1, 6);
+	}
+	else if (Modifier->ModifierType == EModifierType::RerollAll)
+	{
+		for (int32 i = 0; i < PlayerResults.Num(); i++)
+		{
+			if (!PlayerDiceMatched[i])
+			{
+				int32 RerollValue = FMath::RandRange(1, 6);
+				PlayerResults[i] = RerollValue;
+				if (PlayerDice[i])
+				{
+					PlayerDice[i]->CurrentValue = RerollValue;
+				}
+			}
+		}
+		Modifier->UseModifier();
+		SelectionMode = 0;
+		HoveredEnemyIndex = -1;
+		HoveredModifierIndex = -1;
+		UpdateSelectionHighlights();
+		return;
+	}
+
+	PlayerResults[SelectedDiceIndex] = NewValue;
+	if (PlayerDice[SelectedDiceIndex])
+	{
+		PlayerDice[SelectedDiceIndex]->CurrentValue = NewValue;
+	}
+
+	Modifier->UseModifier();
+	SelectionMode = 0;
+	HoveredEnemyIndex = -1;
+	HoveredModifierIndex = -1;
+	UpdateSelectionHighlights();
+}
+
+void ADiceGameManager::CheckAllMatched()
+{
+	int32 MatchCount = 0;
+	for (bool bMatched : EnemyDiceMatched)
+	{
+		if (bMatched) MatchCount++;
+	}
+
+	if (MatchCount >= EnemyDice.Num())
+	{
+		DealDamage(true);
+		CheckGameOver();
+
+		if (CurrentPhase != EGamePhase::GameOver)
+		{
+			CurrentPhase = EGamePhase::RoundEnd;
+		}
+	}
+}
+
+void ADiceGameManager::DealDamage(bool bToEnemy)
+{
+	if (bToEnemy)
+	{
+		EnemyHealth = FMath::Max(0, EnemyHealth - 1);
+	}
+	else
+	{
+		PlayerHealth = FMath::Max(0, PlayerHealth - 1);
+	}
+}
+
+void ADiceGameManager::CheckGameOver()
+{
+	if (EnemyHealth <= 0 || PlayerHealth <= 0)
+	{
+		CurrentPhase = EGamePhase::GameOver;
 	}
 }
 
@@ -510,19 +838,13 @@ void ADiceGameManager::ClearAllDice()
 {
 	for (ADice* D : EnemyDice)
 	{
-		if (D && IsValid(D))
-		{
-			D->Destroy();
-		}
+		if (D && IsValid(D)) D->Destroy();
 	}
 	EnemyDice.Empty();
 
 	for (ADice* D : PlayerDice)
 	{
-		if (D && IsValid(D))
-		{
-			D->Destroy();
-		}
+		if (D && IsValid(D)) D->Destroy();
 	}
 	PlayerDice.Empty();
 }
@@ -538,45 +860,51 @@ void ADiceGameManager::DrawTurnText()
 			Text = "Press G to Start";
 			Color = FColor::Yellow;
 			break;
-
 		case EGamePhase::EnemyThrowing:
 			Text = "Enemy Throwing...";
 			Color = FColor::Red;
 			break;
-
 		case EGamePhase::EnemyDiceSettling:
 			Text = "Enemy Rolling...";
 			Color = FColor::Red;
 			break;
-
 		case EGamePhase::EnemyDiceLining:
 			Text = "Enemy Shows Hand";
 			Color = FColor::Red;
 			break;
-
 		case EGamePhase::PlayerTurn:
 			Text = "YOUR TURN - Press E!";
 			Color = FColor::Green;
 			break;
-
 		case EGamePhase::PlayerThrowing:
 			Text = "Throwing...";
 			Color = FColor::Cyan;
 			break;
-
 		case EGamePhase::PlayerDiceSettling:
 			Text = "Rolling...";
 			Color = FColor::Cyan;
 			break;
-
 		case EGamePhase::PlayerDiceLining:
 			Text = "Your Hand";
 			Color = FColor::Cyan;
 			break;
-
+		case EGamePhase::PlayerMatching:
+			if (SelectionMode == 0)
+				Text = "Select YOUR dice (A/D) then SPACE";
+			else
+				Text = "Select TARGET (A/D) then SPACE | Q to cancel";
+			Color = FColor::Yellow;
+			break;
 		case EGamePhase::RoundEnd:
-			Text = "Press G for Next Round";
-			Color = FColor::Magenta;
+			Text = "Round Won! Press G for Next Round";
+			Color = FColor::Green;
+			break;
+		case EGamePhase::GameOver:
+			if (EnemyHealth <= 0)
+				Text = "YOU WIN! Press G to Restart";
+			else
+				Text = "GAME OVER - Press G to Restart";
+			Color = (EnemyHealth <= 0) ? FColor::Green : FColor::Red;
 			break;
 	}
 
@@ -585,9 +913,10 @@ void ADiceGameManager::DrawTurnText()
 	if (EnemyResults.Num() > 0)
 	{
 		FString EnemyText = "Enemy: ";
-		for (int32 R : EnemyResults)
+		for (int32 i = 0; i < EnemyResults.Num(); i++)
 		{
-			EnemyText += FString::Printf(TEXT("[%d] "), R);
+			bool bMatched = EnemyDiceMatched.IsValidIndex(i) && EnemyDiceMatched[i];
+			EnemyText += bMatched ? FString::Printf(TEXT("X ")) : FString::Printf(TEXT("[%d] "), EnemyResults[i]);
 		}
 		GEngine->AddOnScreenDebugMessage(2, 0.0f, FColor::Red, EnemyText, true, FVector2D(1.5f, 1.5f));
 	}
@@ -595,12 +924,25 @@ void ADiceGameManager::DrawTurnText()
 	if (PlayerResults.Num() > 0)
 	{
 		FString PlayerText = "You: ";
-		for (int32 R : PlayerResults)
+		for (int32 i = 0; i < PlayerResults.Num(); i++)
 		{
-			PlayerText += FString::Printf(TEXT("[%d] "), R);
+			bool bMatched = PlayerDiceMatched.IsValidIndex(i) && PlayerDiceMatched[i];
+			bool bSelected = (i == SelectedDiceIndex && SelectionMode == 0);
+			if (bMatched)
+				PlayerText += TEXT("X ");
+			else if (bSelected)
+				PlayerText += FString::Printf(TEXT(">[%d]< "), PlayerResults[i]);
+			else
+				PlayerText += FString::Printf(TEXT("[%d] "), PlayerResults[i]);
 		}
 		GEngine->AddOnScreenDebugMessage(3, 0.0f, FColor::Green, PlayerText, true, FVector2D(1.5f, 1.5f));
 	}
+}
+
+void ADiceGameManager::DrawHealthBars()
+{
+	FString HealthText = FString::Printf(TEXT("Enemy HP: %d/%d | Your HP: %d/%d"), EnemyHealth, MaxHealth, PlayerHealth, MaxHealth);
+	GEngine->AddOnScreenDebugMessage(4, 0.0f, FColor::White, HealthText, true, FVector2D(1.5f, 1.5f));
 }
 
 FRotator ADiceGameManager::GetRotationForFaceUp(int32 FaceValue)
@@ -621,24 +963,12 @@ AMaskEnemy* ADiceGameManager::FindEnemy()
 {
 	TArray<AActor*> Enemies;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AMaskEnemy::StaticClass(), Enemies);
-
-	if (Enemies.Num() > 0)
-	{
-		return Cast<AMaskEnemy>(Enemies[0]);
-	}
-
-	return nullptr;
+	return (Enemies.Num() > 0) ? Cast<AMaskEnemy>(Enemies[0]) : nullptr;
 }
 
 ADiceCamera* ADiceGameManager::FindCamera()
 {
 	TArray<AActor*> Cameras;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), ADiceCamera::StaticClass(), Cameras);
-
-	if (Cameras.Num() > 0)
-	{
-		return Cast<ADiceCamera>(Cameras[0]);
-	}
-
-	return nullptr;
+	return (Cameras.Num() > 0) ? Cast<ADiceCamera>(Cameras[0]) : nullptr;
 }

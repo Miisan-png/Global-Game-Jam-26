@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "DiceCamera.h"
 #include "GameModeDice.generated.h"
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDiceRolled, int32, Result);
@@ -63,4 +64,10 @@ public:
 	// Last dice roll result
 	UPROPERTY(BlueprintReadOnly, Category = "Dice")
 	int32 LastRollResult;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Camera")
+	ADiceCamera* MainCamera;
+
+	UFUNCTION(BlueprintCallable, Category = "Camera")
+	void SetMainCamera(ADiceCamera* Camera);
 };

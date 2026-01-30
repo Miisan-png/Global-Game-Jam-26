@@ -1,13 +1,17 @@
 // Global Game Jam 2026 - Dice Game Mode
 
 #include "GameModeDice.h"
+#include "DicePlayer.h"
 
 AGameModeDice::AGameModeDice()
 {
+	DefaultPawnClass = ADicePlayer::StaticClass();
+
 	bGameInProgress = false;
 	CurrentRound = 0;
 	MaxRounds = 10;
 	LastRollResult = 0;
+	MainCamera = nullptr;
 }
 
 void AGameModeDice::BeginPlay()
@@ -58,4 +62,13 @@ void AGameModeDice::ResetGame()
 	bGameInProgress = false;
 	CurrentRound = 0;
 	LastRollResult = 0;
+}
+
+void AGameModeDice::SetMainCamera(ADiceCamera* Camera)
+{
+	MainCamera = Camera;
+	if (MainCamera)
+	{
+		MainCamera->ActivateCamera();
+	}
 }

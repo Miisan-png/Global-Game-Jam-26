@@ -16,9 +16,10 @@ AMaskEnemy::AMaskEnemy()
 
 	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
+	CustomMesh = nullptr;
+	CustomMaterial = nullptr;
 	BobSpeed = 1.5f;
 	BobAmplitude = 5.0f;
-	MeshScale = FVector(0.5f);
 	TimeAccumulator = 0.0f;
 }
 
@@ -26,7 +27,18 @@ void AMaskEnemy::BeginPlay()
 {
 	Super::BeginPlay();
 
-	Mesh->SetWorldScale3D(MeshScale);
+	// Apply custom mesh if set (keeps editor scale)
+	if (CustomMesh)
+	{
+		Mesh->SetStaticMesh(CustomMesh);
+	}
+
+	// Apply custom material if set
+	if (CustomMaterial)
+	{
+		Mesh->SetMaterial(0, CustomMaterial);
+	}
+
 	InitialLocation = GetActorLocation();
 }
 

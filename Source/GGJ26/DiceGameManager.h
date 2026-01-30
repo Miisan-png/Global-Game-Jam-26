@@ -36,6 +36,7 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaTime) override;
 
+	// ===== SETUP =====
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Setup")
 	int32 EnemyNumDice;
 
@@ -51,24 +52,87 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Setup")
 	AActor* TableActor;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Setup")
+	// ===== DICE VISUALS =====
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Custom mesh for player dice"))
+	UStaticMesh* PlayerDiceMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Material for player dice"))
+	UMaterialInterface* PlayerDiceMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Custom mesh for enemy dice"))
+	UStaticMesh* EnemyDiceMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Material for enemy dice"))
+	UMaterialInterface* EnemyDiceMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Text color for player dice"))
+	FColor PlayerTextColor;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Text color for enemy dice"))
+	FColor EnemyTextColor;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Enable glow on player dice"))
+	bool bPlayerDiceGlow;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Scale for dice (1.0 = native mesh size)"))
+	float DiceScale;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Show 3D text numbers on dice faces (disable if mesh has baked numbers)"))
+	bool bShowDiceNumbers;
+
+	// ===== LINEUP =====
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lineup", meta = (ToolTip = "Center point for dice lineup. If TableActor is set, this is offset from table."))
+	FVector LineupCenter;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lineup", meta = (ToolTip = "Rotation of lineup in degrees. 0 = dice line up along Y axis."))
+	float LineupYaw;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lineup")
 	float DiceLineupSpacing;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Setup")
-	float EnemyDiceOffsetY;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lineup", meta = (ToolTip = "Distance of enemy row behind center (always goes backward)"))
+	float EnemyRowOffset;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Setup")
-	float PlayerDiceOffsetY;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lineup", meta = (ToolTip = "Distance of player row in front of center (always goes forward)"))
+	float PlayerRowOffset;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Setup")
-	float DiceHeightAboveTable;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lineup")
+	float DiceLineupHeight;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Setup")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lineup")
 	float DiceLineupSpeed;
 
+	// ===== CAMERA =====
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
+	FVector MatchCameraOffset;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
+	float MatchCameraPitch;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
+	float CameraPanSpeed;
+
+	// ===== DRAGGING =====
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dragging")
+	float DragHeight;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dragging")
+	float DragFollowSpeed;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dragging")
+	float DragTiltAmount;
+
+	// ===== DEBUG =====
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
 	bool bShowDebugGizmos;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
+	bool bAdjustMode;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
+	float AdjustStep;
+
+	// ===== HEALTH =====
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
 	int32 PlayerHealth;
 
@@ -78,6 +142,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
 	int32 MaxHealth;
 
+	// ===== STATE (Read Only) =====
 	UPROPERTY(BlueprintReadOnly, Category = "State")
 	EGamePhase CurrentPhase;
 
@@ -113,6 +178,7 @@ private:
 	void OnStartGamePressed();
 	void OnPlayerThrowPressed();
 	void OnToggleDebugPressed();
+	void OnToggleFaceRotationMode();
 	void OnSelectNext();
 	void OnSelectPrev();
 	void OnConfirmSelection();
@@ -132,8 +198,12 @@ private:
 	void UpdateMatchingPhase();
 	void SelectDice(int32 Index);
 	void TryMatchDice(int32 PlayerIndex, int32 EnemyIndex);
-	void TryApplyModifier(ADiceModifier* Modifier);
+	void TryApplyModifier(ADiceModifier* Modifier, int32 DiceIndex);
 	void UpdateSelectionHighlights();
+	void RerollSingleDice(int32 DiceIndex);
+	void RerollAllUnmatchedDice();
+	void UpdateDiceFaceDisplay(ADice* Dice, int32 NewValue);
+	void SnapDiceToModifier(int32 DiceIndex, ADiceModifier* Modifier);
 	void CheckAllMatched();
 	void DealDamage(bool bToEnemy);
 	void CheckGameOver();
@@ -144,8 +214,9 @@ private:
 	void DrawHealthBars();
 
 	FRotator GetRotationForFaceUp(int32 FaceValue);
-	float SmoothStep(float t);
+	FVector GetLineupWorldCenter();
 	float EaseOutCubic(float t);
+	float EaseOutElastic(float t);
 
 	AMaskEnemy* FindEnemy();
 	ADiceCamera* FindCamera();
@@ -169,15 +240,35 @@ private:
 
 	TArray<bool> PlayerDiceMatched;
 	TArray<bool> EnemyDiceMatched;
+	TArray<bool> PlayerDiceModified;  // Dice that have been modified (can't use more modifiers)
+	TArray<ADiceModifier*> PlayerDiceAtModifier;  // Which modifier each dice is at (nullptr if none)
 	int32 SelectionMode;
 	int32 HoveredEnemyIndex;
 	int32 HoveredModifierIndex;
 
+	// Dragging state
 	bool bIsDragging;
 	ADice* DraggedDice;
 	int32 DraggedDiceIndex;
-	FVector DragOffset;
 	FVector OriginalDragPosition;
+	FRotator OriginalDragRotation;
+	FVector LastDragPosition;
+
+	// Return animation
+	bool bDiceReturning;
+	ADice* ReturningDice;
+	int32 ReturningDiceIndex;
+	float ReturnProgress;
+	FVector ReturnStartPos;
+	FRotator ReturnStartRot;
+	FVector ReturnTargetPos;
+	FRotator ReturnTargetRot;
+	FVector ReturnVelocity;
+
+	// Modifier snap animation
+	bool bDiceSnappingToModifier;
+	ADiceModifier* SnapTargetModifier;
+	int32 SnapDiceIndex;
 
 	void OnMousePressed();
 	void OnMouseReleased();
@@ -185,10 +276,13 @@ private:
 	AActor* GetActorUnderMouse(FVector& HitLocation);
 	FVector GetMouseWorldPosition();
 	void StartDragging(ADice* Dice, int32 Index);
-	void StopDragging();
+	void StopDragging(bool bSuccess);
 	void UpdateDragging();
+	void UpdateDiceReturn(float DeltaTime);
+	void UpdateModifierSnap(float DeltaTime);
 	void HighlightValidTargets();
 	void ClearAllHighlights();
+	void PlayMatchEffect(FVector Location);
 
 	void ActivateModifiers();
 	void DeactivateModifiers();
@@ -197,10 +291,23 @@ private:
 	void UpdateCameraPan(float DeltaTime);
 	void ResetCamera();
 
+	// Adjust mode
+	void UpdateAdjustMode();
+	void DrawAdjustGizmos();
+	void PrintCurrentSettings();
+	int32 AdjustSelection; // 0=Center, 1=EnemyRow, 2=PlayerRow, 3=Spacing, 4=Yaw
+
+	// Face rotation tool
+	bool bFaceRotationMode;
+	int32 CurrentFaceEdit; // 1-6
+	TArray<FRotator> FaceRotations;
+	void UpdateFaceRotationMode();
+	void SpawnTestDice();
+	void UpdateTestDice();
+	ADice* TestDice;
+
 	FVector OriginalCameraLocation;
 	FRotator OriginalCameraRotation;
-	FVector TargetCameraLocation;
-	FRotator TargetCameraRotation;
 	float CameraPanProgress;
 	bool bCameraPanning;
 	bool bCameraAtMatchView;

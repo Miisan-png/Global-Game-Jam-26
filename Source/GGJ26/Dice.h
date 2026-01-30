@@ -48,17 +48,40 @@ public:
 	UFUNCTION(BlueprintCallable)
 	void SetMatched(bool bMatch);
 
+	UFUNCTION(BlueprintCallable)
+	void SetCustomMesh(UStaticMesh* NewMesh);
+
+	UFUNCTION(BlueprintCallable)
+	void SetCustomMaterial(UMaterialInterface* NewMaterial);
+
+	UFUNCTION(BlueprintCallable)
+	void SetTextColor(FColor NewColor);
+
+	UFUNCTION(BlueprintCallable)
+	void SetGlowEnabled(bool bEnable);
+
+	UFUNCTION(BlueprintCallable)
+	void SetFaceNumbersVisible(bool bVisible);
+
 	UPROPERTY(BlueprintReadOnly)
 	bool bIsHighlighted;
 
 	UPROPERTY(BlueprintReadOnly)
 	bool bIsMatched;
 
+	UPROPERTY(BlueprintReadOnly)
+	bool bHasGlow;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	int32 CurrentValue;
 
-private:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	FColor TextColor;
+
+	// Allow external reset for re-throwing
 	bool bHasBeenThrown;
+
+private:
 	float HighlightPulse;
 
 	void SetupFaceTexts();

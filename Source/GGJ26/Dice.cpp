@@ -34,8 +34,10 @@ ADice::ADice()
 	bHasBeenThrown = false;
 	bIsHighlighted = false;
 	bIsMatched = false;
+	bHasGlow = false;
 	CurrentValue = 0;
 	HighlightPulse = 0.0f;
+	TextColor = FColor::White;
 
 	SetupFaceTexts();
 }
@@ -169,6 +171,7 @@ FVector ADice::GetFaceCenter(int32 FaceIndex)
 
 void ADice::SetupFaceTexts()
 {
+	// Offset from center - will be scaled with mesh
 	float Offset = 51.0f;
 
 	for (int32 i = 1; i <= 6; i++)
@@ -246,4 +249,53 @@ int32 ADice::GetFaceValueFromDirection(FVector LocalDirection)
 	}
 
 	return BestFace;
+}
+
+void ADice::SetCustomMesh(UStaticMesh* NewMesh)
+{
+	if (NewMesh && Mesh)
+	{
+		Mesh->SetStaticMesh(NewMesh);
+	}
+}
+
+void ADice::SetCustomMaterial(UMaterialInterface* NewMaterial)
+{
+	if (NewMaterial && Mesh)
+	{
+		Mesh->SetMaterial(0, NewMaterial);
+	}
+}
+
+void ADice::SetTextColor(FColor NewColor)
+{
+	TextColor = NewColor;
+	for (UTextRenderComponent* TextComp : FaceTexts)
+	{
+		if (TextComp)
+		{
+			TextComp->SetTextRenderColor(NewColor);
+		}
+	}
+}
+
+void ADice::SetGlowEnabled(bool bEnable)
+{
+	bHasGlow = bEnable;
+	if (Mesh)
+	{
+		Mesh->SetRenderCustomDepth(bEnable);
+		Mesh->SetCustomDepthStencilValue(bEnable ? 1 : 0);
+	}
+}
+
+void ADice::SetFaceNumbersVisible(bool bVisible)
+{
+	for (UTextRenderComponent* TextComp : FaceTexts)
+	{
+		if (TextComp)
+		{
+			TextComp->SetVisibility(bVisible);
+		}
+	}
 }

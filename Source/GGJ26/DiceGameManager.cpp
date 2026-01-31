@@ -12,6 +12,8 @@
 #include "Components/InputComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "Camera/CameraComponent.h"
+#include "Blueprint/UserWidget.h"
+#include "Components/Image.h"
 
 ADiceGameManager::ADiceGameManager()
 {
@@ -187,6 +189,31 @@ ADiceGameManager::ADiceGameManager()
 	BonusCameraFocusSpeed = 2.5f;
 	bDebugBonusCamera = false;
 
+	// Masquerade UI
+	MasqueradeUIActor = nullptr;
+	MasqueradeUIText = nullptr;
+	TypewriterSpeed = 15.0f;  // Characters per second
+	GlitchChance = 0.3f;      // 30% chance of glitch per character
+	TypewriterTimer = 0.0f;
+	TypewriterIndex = 0;
+	bTypewriterActive = false;
+	bTypewriterOut = false;
+	GlitchTimer = 0.0f;
+	bShowingGlitch = false;
+	GlitchChars = TEXT("@#$%&*!?<>[]{}|/\\");
+
+	// Dice Label (fold prompt)
+	DiceLabelActor = nullptr;
+	DiceLabelTextComp = nullptr;
+	DiceLabelText = TEXT("SPACE TO FOLD");
+	DiceLabelTypeSpeed = 20.0f;
+	DiceLabelFullText = TEXT("");
+	DiceLabelCurrentText = TEXT("");
+	DiceLabelTypeTimer = 0.0f;
+	DiceLabelTypeIndex = 0;
+	bDiceLabelTypewriterActive = false;
+	bDiceLabelTypewriterOut = false;
+
 	// Masked dice
 	MaskedDiceMesh = nullptr;
 	MaskedDiceMaterial = nullptr;
@@ -203,6 +230,8 @@ ADiceGameManager::ADiceGameManager()
 	bPlayerGuessedHigher = false;
 	BonusDiceModifier = 0;
 	bBonusWon = false;
+	bBonusActiveThisRound = false;
+	bBonusRoundJustEnded = false;
 	BonusAnimTimer = 0.0f;
 	BonusLineupProgress = 0.0f;
 	BonusPlayerLineupProgress = 0.0f;
@@ -210,6 +239,71 @@ ADiceGameManager::ADiceGameManager()
 	BonusCameraProgress = 0.0f;
 	bBonusCameraFocusing = false;
 	bBonusCameraReturning = false;
+
+	// Bonus dice snap animation
+	bBonusDiceSnapping = false;
+	BonusSnapProgress = 0.0f;
+	bBonusSnapChoseHigher = false;
+	SelectedBonusModifier = nullptr;
+
+	// Bonus reveal animation
+	BonusRevealPhase = 0;
+	RevealShakeTimer = 0.0f;
+	RevealStrikeProgress = 0.0f;
+	BonusPlayerVelocity = FVector::ZeroVector;
+	BonusRevealVelocity = FVector::ZeroVector;
+	BonusPlayerRotSpeed = 0.0f;
+	BonusRevealRotSpeed = 0.0f;
+	BonusBounceCount = 0;
+	BonusResultFloorZ = 0.0f;
+
+	// Bonus camera shake
+	bBonusCameraShaking = false;
+	BonusCameraShakeTimer = 0.0f;
+	BonusCameraShakeDuration = 0.0f;
+	BonusCameraShakeIntensity = 0.0f;
+	BonusCameraShakeOffset = FVector::ZeroVector;
+
+	// Win sequence
+	WinSequencePhase = 0;
+	WinSequenceTimer = 0.0f;
+	WinSequenceProgress = 0.0f;
+	WinMaskRotationProgress = 0.0f;
+	WinFadeAlpha = 0.0f;
+	FadeWidgetClass = nullptr;
+
+	// Win camera breathing
+	bWinCameraBreathing = false;
+	WinCameraBreathTimer = 0.0f;
+	WinCameraBasePos = FVector::ZeroVector;
+	WinCameraBaseRot = FRotator::ZeroRotator;
+
+	// Mask mesh animation
+	WinMaskMeshStartPos = FVector::ZeroVector;
+	WinMaskMeshStartRot = FRotator::ZeroRotator;
+	WinMaskMeshTargetPos = FVector::ZeroVector;
+	WinMaskMeshTargetRot = FRotator::ZeroRotator;
+	FadeWidgetInstance = nullptr;
+	BlackImageWidget = nullptr;
+
+	// Lose sequence
+	PlayerMaskMesh = nullptr;
+	PlayerMaskMaterial = nullptr;
+	PlayerMaskDropScale = 0.1f;
+	PlayerMaskDropRotation = FRotator(-90.0f, 0.0f, 0.0f);  // Facing down by default
+	LoseCameraForwardOffset = 50.0f;  // Move forward a bit by default
+	LoseSequencePhase = 0;
+	LoseSequenceTimer = 0.0f;
+	LoseSequenceProgress = 0.0f;
+	LoseFadeAlpha = 0.0f;
+	LoseCameraStartPos = FVector::ZeroVector;
+	LoseCameraStartRot = FRotator::ZeroRotator;
+	LoseCameraTargetRot = FRotator::ZeroRotator;
+	bLoseCameraBreathing = false;
+	LoseCameraBreathTimer = 0.0f;
+	DroppedPlayerMask = nullptr;
+	PlayerMaskDropStartPos = FVector::ZeroVector;
+	DroppedKnife = nullptr;
 }
 
 void ADiceGameManager::BeginPlay()
@@ -217,6 +311,17 @@ void ADiceGameManager::BeginPlay()
 	Super::BeginPlay();
 	SetupInputBindings();
 	FindAllModifiers();
+
+	// Cache and hide the dice label at start
+	if (DiceLabelActor)
+	{
+		DiceLabelTextComp = DiceLabelActor->FindComponentByClass<UTextRenderComponent>();
+		if (DiceLabelTextComp)
+		{
+			DiceLabelTextComp->SetText(FText::FromString(TEXT("")));
+		}
+		DiceLabelActor->SetActorHiddenInGame(true);
+	}
 
 	// Store initial camera position
 	ADiceCamera* Cam = FindCamera();
@@ -262,6 +367,12 @@ void ADiceGameManager::BeginPlay()
 	{
 		NoBtn->OnButtonPressed.AddDynamic(this, &ADiceGameManager::OnBonusButtonPressed);
 	}
+
+	// Hide Masquerade UI by default
+	if (MasqueradeUIActor)
+	{
+		MasqueradeUIActor->SetActorHiddenInGame(true);
+	}
 }
 
 void ADiceGameManager::SetupInputBindings()
@@ -277,6 +388,8 @@ void ADiceGameManager::SetupInputBindings()
 			InputComponent->BindKey(EKeys::G, IE_Pressed, this, &ADiceGameManager::OnStartGamePressed);  // Keep G as backup
 			InputComponent->BindKey(EKeys::T, IE_Pressed, this, &ADiceGameManager::OnToggleDebugPressed);
 			InputComponent->BindKey(EKeys::F, IE_Pressed, this, &ADiceGameManager::OnToggleFaceRotationMode);
+			InputComponent->BindKey(EKeys::X, IE_Pressed, this, &ADiceGameManager::OnDebugKillEnemy);  // Debug damage enemy
+			InputComponent->BindKey(EKeys::Z, IE_Pressed, this, &ADiceGameManager::OnDebugKillPlayer); // Debug damage player
 			InputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ADiceGameManager::OnMousePressed);
 			InputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ADiceGameManager::OnMouseReleased);
 			InputComponent->BindKey(EKeys::SpaceBar, IE_Pressed, this, &ADiceGameManager::OnGiveUpPressed);
@@ -334,6 +447,24 @@ void ADiceGameManager::Tick(float DeltaTime)
 
 	// Update bonus round gameplay
 	UpdateBonusRound(DeltaTime);
+
+	// Update bonus dice snap animation
+	UpdateBonusDiceSnap(DeltaTime);
+
+	// Update bonus camera shake
+	UpdateBonusCameraShake(DeltaTime);
+
+	// Update masquerade UI typewriter effect
+	UpdateMasqueradeTypewriter(DeltaTime);
+
+	// Update dice label typewriter effect
+	UpdateDiceLabelTypewriter(DeltaTime);
+
+	// Update win sequence
+	UpdateWinSequence(DeltaTime);
+
+	// Update lose sequence
+	UpdateLoseSequence(DeltaTime);
 
 	// Debug: lock camera to bonus button view
 	if (bDebugBonusCamera)
@@ -431,8 +562,7 @@ void ADiceGameManager::OnStartGamePressed()
 	}
 	else if (CurrentPhase == EGamePhase::RoundEnd)
 	{
-		// Continue to next round (don't reset everything)
-		CurrentRound++;
+		// Continue to next round
 		ContinueToNextRound();
 	}
 	else if (CurrentPhase == EGamePhase::GameOver)
@@ -446,7 +576,12 @@ void ADiceGameManager::OnStartGamePressed()
 			if (Mod)
 			{
 				Mod->bIsUsed = false;
-				Mod->ModifierText->SetVisibility(true);
+				// Keep bonus modifiers hidden - they only show during bonus round
+				if (Mod->ModifierType != EModifierType::BonusHigher &&
+					Mod->ModifierType != EModifierType::BonusLower)
+				{
+					Mod->ModifierText->SetVisibility(true);
+				}
 			}
 		}
 		StartGame();
@@ -483,7 +618,6 @@ void ADiceGameManager::OnPlayerActionPressed()
 	else if (CurrentPhase == EGamePhase::RoundEnd)
 	{
 		// Continue to next round
-		CurrentRound++;
 		ContinueToNextRound();
 	}
 	else if (CurrentPhase == EGamePhase::GameOver)
@@ -497,7 +631,12 @@ void ADiceGameManager::OnPlayerActionPressed()
 			if (Mod)
 			{
 				Mod->bIsUsed = false;
-				Mod->ModifierText->SetVisibility(true);
+				// Keep bonus modifiers hidden - they only show during bonus round
+				if (Mod->ModifierType != EModifierType::BonusHigher &&
+					Mod->ModifierType != EModifierType::BonusLower)
+				{
+					Mod->ModifierText->SetVisibility(true);
+				}
 			}
 		}
 		StartGame();
@@ -545,6 +684,20 @@ void ADiceGameManager::OnGiveUpPressed()
 	}
 }
 
+void ADiceGameManager::OnDebugKillEnemy()
+{
+	// Debug - reduce enemy health by 1
+	EnemyHealth = FMath::Max(0, EnemyHealth - 1);
+	GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Red, FString::Printf(TEXT("DEBUG: Enemy HP = %d"), EnemyHealth));
+}
+
+void ADiceGameManager::OnDebugKillPlayer()
+{
+	// Debug - reduce player health by 1
+	PlayerHealth = FMath::Max(0, PlayerHealth - 1);
+	GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Red, FString::Printf(TEXT("DEBUG: Player HP = %d"), PlayerHealth));
+}
+
 void ADiceGameManager::UpdateDiceDebugVisibility()
 {
 	for (ADice* D : EnemyDice)
@@ -559,6 +712,9 @@ void ADiceGameManager::UpdateDiceDebugVisibility()
 
 void ADiceGameManager::StartGame()
 {
+	// Hide the fold prompt at game start
+	HideDiceLabel();
+
 	ClearAllDice();
 
 	EnemyResults.Empty();
@@ -582,8 +738,16 @@ void ADiceGameManager::StartGame()
 		{
 			Mod->bIsUsed = false;
 			Mod->SetActive(false);
-			// Make sure it's visible
-			Mod->ModifierText->SetVisibility(true);
+			// Make sure regular modifiers are visible (keep bonus modifiers hidden)
+			if (Mod->ModifierType != EModifierType::BonusHigher &&
+				Mod->ModifierType != EModifierType::BonusLower)
+			{
+				Mod->ModifierText->SetVisibility(true);
+			}
+			else
+			{
+				Mod->SetHidden(true);
+			}
 		}
 	}
 
@@ -1099,6 +1263,8 @@ void ADiceGameManager::LineUpPlayerDice(float DeltaTime)
 
 void ADiceGameManager::StartMatchingPhase()
 {
+	UE_LOG(LogTemp, Warning, TEXT("StartMatchingPhase - CurrentRound: %d"), CurrentRound);
+
 	CurrentPhase = EGamePhase::PlayerMatching;
 	SelectionMode = 0;
 	SelectedDiceIndex = 0;
@@ -1119,6 +1285,9 @@ void ADiceGameManager::StartMatchingPhase()
 	StartModifierShuffle();
 
 	StartCameraPan();
+
+	// Show the fold prompt with typewriter effect
+	StartDiceLabelTypewriter();
 }
 
 void ADiceGameManager::UpdateMatchingPhase()
@@ -1690,6 +1859,9 @@ void ADiceGameManager::CheckAllMatched()
 
 	if (MatchCount >= EnemyDice.Num())
 	{
+		// Hide the fold prompt
+		StartDiceLabelTypewriterOut();
+
 		// Stop the timer - player won this round!
 		URoundTimerComponent* Timer = GetRoundTimer();
 		if (Timer)
@@ -1729,9 +1901,17 @@ void ADiceGameManager::DealDamage(bool bToEnemy)
 
 void ADiceGameManager::CheckGameOver()
 {
-	if (EnemyHealth <= 0 || PlayerHealth <= 0)
+	if (EnemyHealth <= 0)
 	{
+		// Player wins! Start win sequence
 		CurrentPhase = EGamePhase::GameOver;
+		StartWinSequence();
+	}
+	else if (PlayerHealth <= 0)
+	{
+		// Player loses - start lose sequence
+		CurrentPhase = EGamePhase::GameOver;
+		StartLoseSequence();
 	}
 }
 
@@ -2001,9 +2181,11 @@ ADiceCamera* ADiceGameManager::FindCamera()
 
 void ADiceGameManager::OnMousePressed()
 {
-	// Allow during bonus round phase 4 (player turn)
+	// Allow during bonus round phase 7 (player turn) but not during snap
 	if (BonusPhase == 7)
 	{
+		if (bBonusDiceSnapping) return;  // Block during snap animation
+
 		FVector HitLocation;
 		AActor* HitActor = GetActorUnderMouse(HitLocation);
 		if (HitActor && HitActor == BonusPlayerDice)
@@ -2069,15 +2251,15 @@ void ADiceGameManager::OnMouseReleased()
 			bool bChoseHigher = (ClosestMod->ModifierType == EModifierType::BonusHigher);
 			ClosestMod->UseModifier();
 
-			// Stop dragging
+			// Stop dragging state
 			DraggedDice->SetHighlighted(false);
 			DraggedDice->bIsBeingDragged = false;
 			bIsDragging = false;
 			DraggedDice = nullptr;
 			DraggedDiceIndex = -1;
 
-			// Process the choice
-			OnBonusModifierSelected(bChoseHigher);
+			// Start snap animation instead of immediately processing
+			StartBonusDiceSnap(ClosestMod, bChoseHigher);
 		}
 		else
 		{
@@ -2493,13 +2675,15 @@ void ADiceGameManager::UpdateDiceReturn(float DeltaTime)
 void ADiceGameManager::HighlightValidTargets()
 {
 	if (!DraggedDice || DraggedDiceIndex < 0) return;
+	if (CurrentPhase == EGamePhase::GameOver) return;  // Don't highlight during win/lose
+	if (!PlayerResults.IsValidIndex(DraggedDiceIndex)) return;  // Bounds check
 
 	int32 DraggedValue = PlayerResults[DraggedDiceIndex];
 
 	// Highlight enemy dice with matching values
 	for (int32 i = 0; i < EnemyDice.Num(); i++)
 	{
-		if (EnemyDice[i] && !EnemyDiceMatched[i])
+		if (EnemyDice[i] && EnemyDiceMatched.IsValidIndex(i) && !EnemyDiceMatched[i] && EnemyResults.IsValidIndex(i))
 		{
 			bool bCanMatch = (EnemyResults[i] == DraggedValue);
 			EnemyDice[i]->SetHighlighted(bCanMatch);
@@ -2949,6 +3133,9 @@ bool ADiceGameManager::CanStillMatch()
 
 void ADiceGameManager::GiveUpRound()
 {
+	// Hide the fold prompt
+	StartDiceLabelTypewriterOut();
+
 	// Stop the timer
 	URoundTimerComponent* Timer = GetRoundTimer();
 	if (Timer)
@@ -2980,6 +3167,29 @@ void ADiceGameManager::GiveUpRound()
 
 void ADiceGameManager::ContinueToNextRound()
 {
+	// Increment round counter
+	CurrentRound++;
+	UE_LOG(LogTemp, Warning, TEXT("ContinueToNextRound - Now Round %d"), CurrentRound);
+
+	// Handle temporary bonus dice reset logic:
+	// - If we just finished a bonus round, don't reset yet (play this round with bonus dice)
+	// - If we're finishing the bonus-affected round, reset back to base dice count
+	if (bBonusRoundJustEnded)
+	{
+		// Just came from bonus round - keep the modified dice count for THIS round
+		// Next round will reset
+		bBonusRoundJustEnded = false;
+		// bBonusActiveThisRound was set in ShowBonusResult, so next call will reset
+		UE_LOG(LogTemp, Warning, TEXT("Starting bonus-affected round with %d dice"), PlayerNumDice);
+	}
+	else if (bBonusActiveThisRound)
+	{
+		// Finished the bonus-affected round - reset dice count to base
+		PlayerNumDice = BaseDiceCount;
+		bBonusActiveThisRound = false;
+		UE_LOG(LogTemp, Warning, TEXT("Bonus effect expired, reset to %d dice"), PlayerNumDice);
+	}
+
 	// Clear dice but keep permanent modifier state
 	ClearAllDice();
 
@@ -3015,11 +3225,13 @@ void ADiceGameManager::ResetModifiersForNewRound()
 
 void ADiceGameManager::StartModifierShuffle()
 {
-	// Get list of available (non-permanently-removed) modifiers
+	// Get list of available (non-permanently-removed) modifiers - exclude bonus modifiers
 	TArray<ADiceModifier*> AvailableModifiers;
 	for (ADiceModifier* Mod : AllModifiers)
 	{
-		if (Mod && !PermanentlyRemovedModifiers.Contains(Mod))
+		if (Mod && !PermanentlyRemovedModifiers.Contains(Mod) &&
+			Mod->ModifierType != EModifierType::BonusHigher &&
+			Mod->ModifierType != EModifierType::BonusLower)
 		{
 			AvailableModifiers.Add(Mod);
 		}
@@ -3037,16 +3249,20 @@ void ADiceGameManager::StartModifierShuffle()
 	ResetModifiersForNewRound();
 
 	// Pick a random modifier to permanently remove (if this isn't round 1)
-	if (CurrentRound > 1 && AvailableModifiers.Num() > 0)
+	if (CurrentRound > 1 && AvailableModifiers.Num() > 1)  // Keep at least 1 modifier
 	{
 		int32 RemoveIndex = FMath::RandRange(0, AvailableModifiers.Num() - 1);
 		FadingModifier = AvailableModifiers[RemoveIndex];
 		PermanentlyRemovedModifiers.Add(FadingModifier);
 		AvailableModifiers.RemoveAt(RemoveIndex);
+		UE_LOG(LogTemp, Warning, TEXT("Round %d: Removing modifier '%s' (%d remaining)"),
+			CurrentRound, *FadingModifier->GetModifierDisplayText(), AvailableModifiers.Num());
 	}
 	else
 	{
 		FadingModifier = nullptr;
+		UE_LOG(LogTemp, Warning, TEXT("Round %d: No modifier removed (%d available)"),
+			CurrentRound, AvailableModifiers.Num());
 	}
 
 	// Store current positions and calculate target positions (shuffle!)
@@ -3090,11 +3306,13 @@ void ADiceGameManager::UpdateModifierShuffle(float DeltaTime)
 	float SmoothAlpha = EaseOutElastic(Alpha);
 	float LinearAlpha = EaseOutCubic(Alpha);
 
-	// Get available modifiers (same order as positions)
+	// Get available modifiers (same order as positions) - exclude bonus modifiers
 	TArray<ADiceModifier*> AvailableModifiers;
 	for (ADiceModifier* Mod : AllModifiers)
 	{
-		if (Mod && !PermanentlyRemovedModifiers.Contains(Mod))
+		if (Mod && !PermanentlyRemovedModifiers.Contains(Mod) &&
+			Mod->ModifierType != EModifierType::BonusHigher &&
+			Mod->ModifierType != EModifierType::BonusLower)
 		{
 			AvailableModifiers.Add(Mod);
 		}
@@ -3117,21 +3335,12 @@ void ADiceGameManager::UpdateModifierShuffle(float DeltaTime)
 		}
 	}
 
-	// Fade out the removed modifier
-	if (FadingModifier)
+	// Fade out the removed modifier - simple fade, no glitchy scaling
+	if (FadingModifier && FadingModifier->ModifierText)
 	{
 		FadingModifierAlpha = 1.0f - LinearAlpha;
 
-		// Scale down and fade
-		float FadeScale = FMath::Max(0.1f, FadingModifierAlpha);
-		FadingModifier->ModifierText->SetWorldScale3D(FVector(FadeScale));
-
-		// Shrink and rise
-		FVector FadePos = FadingModifier->GetActorLocation();
-		FadePos.Z += DeltaTime * 50.0f * (1.0f - FadingModifierAlpha);  // Rise as fading
-		FadingModifier->SetActorLocation(FadePos);
-
-		// Fade color
+		// Just fade the color smoothly
 		uint8 FadeAlpha = FMath::Clamp(int32(FadingModifierAlpha * 255), 0, 255);
 		FadingModifier->ModifierText->SetTextRenderColor(FColor(255, 100, 100, FadeAlpha));
 	}
@@ -3152,8 +3361,10 @@ void ADiceGameManager::UpdateModifierShuffle(float DeltaTime)
 		// Hide the faded modifier completely
 		if (FadingModifier)
 		{
-			FadingModifier->ModifierText->SetVisibility(false);
+			FadingModifier->SetHidden(true);  // Hide entire actor
 			FadingModifier->SetActive(false);
+			UE_LOG(LogTemp, Warning, TEXT("Modifier '%s' permanently removed (Round %d)"),
+				*FadingModifier->GetModifierDisplayText(), CurrentRound);
 			FadingModifier = nullptr;
 		}
 
@@ -3317,6 +3528,9 @@ void ADiceGameManager::OnRoundTimerExpired()
 
 void ADiceGameManager::TriggerPlayerChop()
 {
+	// Deal damage to player health
+	DealDamage(false);
+
 	UPlayerHandComponent* Hand = GetPlayerHand();
 	if (Hand && Hand->FingersRemaining > 0)
 	{
@@ -3332,6 +3546,9 @@ void ADiceGameManager::TriggerPlayerChop()
 
 void ADiceGameManager::TriggerEnemyChop()
 {
+	// Deal damage to enemy health
+	DealDamage(true);
+
 	UPlayerHandComponent* Hand = GetEnemyHand();
 	if (Hand && Hand->FingersRemaining > 0)
 	{
@@ -3349,11 +3566,10 @@ void ADiceGameManager::OnPlayerChopComplete()
 {
 	bWaitingForChop = false;
 
-	// Check for game over (no fingers left = dead)
-	UPlayerHandComponent* Hand = GetPlayerHand();
-	if (Hand && Hand->FingersRemaining <= 0)
+	// Check for game over using health system
+	if (PlayerHealth <= 0)
 	{
-		CurrentPhase = EGamePhase::GameOver;
+		CheckGameOver();
 		return;
 	}
 
@@ -3372,11 +3588,10 @@ void ADiceGameManager::OnEnemyChopComplete()
 {
 	bWaitingForChop = false;
 
-	// Check for game over
-	UPlayerHandComponent* Hand = GetEnemyHand();
-	if (Hand && Hand->FingersRemaining <= 0)
+	// Check for game over using health system (will trigger win sequence if enemy dead)
+	if (EnemyHealth <= 0)
 	{
-		CurrentPhase = EGamePhase::GameOver;
+		CheckGameOver();
 		return;
 	}
 
@@ -3723,20 +3938,14 @@ void ADiceGameManager::ThrowBonusMaskedDice()
 			Dice->SetFaceNumbersVisible(bShowDiceNumbers);
 			Dice->SetTextColor(EnemyTextColor);
 
-			// Throw towards table with strong downward force
-			UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Dice->GetRootComponent());
-			if (PrimComp)
-			{
-				PrimComp->SetSimulatePhysics(true);
-				FVector ThrowDirection = (ThrowTarget - SpawnLocation).GetSafeNormal();
-				ThrowDirection.Z = -0.8f;  // Strong downward
-				ThrowDirection.Normalize();
-				PrimComp->AddImpulse(ThrowDirection * DiceThrowForce * 1.2f);
-				PrimComp->AddAngularImpulseInDegrees(FVector(
-					FMath::RandRange(-800.f, 800.f),
-					FMath::RandRange(-800.f, 800.f),
-					FMath::RandRange(-800.f, 800.f)));
-			}
+			// Throw towards table - same as normal enemy dice
+			FVector ThrowDirection = (ThrowTarget - SpawnLocation).GetSafeNormal();
+			ThrowDirection += FVector(
+				FMath::RandRange(-0.15f, 0.15f),
+				FMath::RandRange(-0.15f, 0.15f),
+				FMath::RandRange(-0.1f, 0.0f)
+			);
+			Dice->Throw(ThrowDirection, DiceThrowForce);
 
 			BonusMaskedDice.Add(Dice);
 
@@ -3792,8 +4001,8 @@ void ADiceGameManager::PrepareBonusDiceLineup()
 	FVector RightDir = FVector(FMath::Sin(LineupDir), FMath::Cos(LineupDir), 0.0f);
 	FVector ForwardDir = FVector(FMath::Cos(LineupDir), -FMath::Sin(LineupDir), 0.0f);
 
-	// Masked enemy dice go to PLAYER row (close to camera) - swapped for bonus round
-	FVector EnemyRowCenter = WorldCenter + ForwardDir * PlayerRowOffset;
+	// Masked enemy dice go to ENEMY row (back, away from camera)
+	FVector EnemyRowCenter = WorldCenter + ForwardDir * EnemyRowOffset;
 
 	int32 NumDice = BonusMaskedDice.Num();
 	float TotalWidth = (NumDice - 1) * DiceLineupSpacing;
@@ -3967,11 +4176,11 @@ void ADiceGameManager::PrepareBonusPlayerLineup()
 	BonusPlayerDiceStartPos = BonusPlayerDice->GetActorLocation();
 	BonusPlayerDiceStartRot = BonusPlayerDice->GetActorRotation();
 
-	// Target: centered in enemy row (far) - player dice goes far in bonus round
+	// Target: centered in player row (front, close to camera)
 	FVector WorldCenter = GetLineupWorldCenter();
 	float LineupDir = FMath::DegreesToRadians(LineupYaw);
 	FVector ForwardDir = FVector(FMath::Cos(LineupDir), -FMath::Sin(LineupDir), 0.0f);
-	BonusPlayerDiceTargetPos = WorldCenter - ForwardDir * EnemyRowOffset;
+	BonusPlayerDiceTargetPos = WorldCenter - ForwardDir * PlayerRowOffset;
 	BonusPlayerDiceTargetPos.Z = WorldCenter.Z + DiceLineupHeight;
 
 	// Face up with value 1
@@ -4028,10 +4237,12 @@ void ADiceGameManager::StartBonusPlayerTurn()
 			if (Mod->ModifierType == EModifierType::BonusHigher ||
 				Mod->ModifierType == EModifierType::BonusLower)
 			{
-				// Show and activate bonus modifiers
+				// Show and activate bonus modifiers (keep their placed position)
 				Mod->SetHidden(false);
 				Mod->SetActive(true);
 				Mod->bIsUsed = false;
+				// Reset text to original (in case it was changed to Lucky!/Unlucky)
+				Mod->UpdateVisuals();
 			}
 			else
 			{
@@ -4042,7 +4253,115 @@ void ADiceGameManager::StartBonusPlayerTurn()
 		}
 	}
 
+	// Start the glitchy typewriter UI
+	StartMasqueradeTypewriter();
+
 	UE_LOG(LogTemp, Warning, TEXT("Drag YES dice to >7 or <7 modifier!"));
+}
+
+void ADiceGameManager::StartBonusDiceSnap(ADiceModifier* Modifier, bool bChoseHigher)
+{
+	if (!BonusPlayerDice || !Modifier) return;
+
+	bBonusDiceSnapping = true;
+	BonusSnapProgress = 0.0f;
+	bBonusSnapChoseHigher = bChoseHigher;
+	SelectedBonusModifier = Modifier;  // Store for later text update
+
+	// Store start position
+	BonusSnapStartPos = BonusPlayerDice->GetActorLocation();
+	BonusSnapStartRot = BonusPlayerDice->GetActorRotation();
+
+	// Target position is above the modifier
+	BonusSnapTargetPos = Modifier->GetActorLocation() + FVector(0, 0, 20.0f);
+	BonusSnapTargetRot = GetRotationForFaceUp(BonusPlayerDice->GetResult());
+	BonusSnapTargetRot.Yaw += LineupYaw;
+
+	// Disable physics during snap
+	if (BonusPlayerDice->Mesh)
+	{
+		BonusPlayerDice->Mesh->SetSimulatePhysics(false);
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("Starting bonus dice snap to modifier"));
+}
+
+void ADiceGameManager::UpdateBonusDiceSnap(float DeltaTime)
+{
+	if (!bBonusDiceSnapping) return;
+	if (!BonusPlayerDice)
+	{
+		bBonusDiceSnapping = false;
+		return;
+	}
+
+	BonusSnapProgress += DeltaTime * 5.0f;  // Same speed as normal snap
+	float Alpha = FMath::Clamp(BonusSnapProgress, 0.0f, 1.0f);
+
+	// Smooth easing
+	float SmoothAlpha = EaseOutCubic(Alpha);
+
+	// Lerp position and rotation
+	FVector NewPos = FMath::Lerp(BonusSnapStartPos, BonusSnapTargetPos, SmoothAlpha);
+	FRotator NewRot = FMath::Lerp(BonusSnapStartRot, BonusSnapTargetRot, SmoothAlpha);
+	BonusPlayerDice->SetActorLocation(NewPos);
+	BonusPlayerDice->SetActorRotation(NewRot);
+
+	if (BonusSnapProgress >= 1.0f)
+	{
+		// Snap complete - set final position
+		BonusPlayerDice->SetActorLocation(BonusSnapTargetPos);
+		BonusPlayerDice->SetActorRotation(BonusSnapTargetRot);
+
+		bBonusDiceSnapping = false;
+
+		// Now process the choice
+		OnBonusModifierSelected(bBonusSnapChoseHigher);
+	}
+}
+
+void ADiceGameManager::StartBonusCameraShake(float Duration, float Intensity)
+{
+	bBonusCameraShaking = true;
+	BonusCameraShakeTimer = 0.0f;
+	BonusCameraShakeDuration = Duration;
+	BonusCameraShakeIntensity = Intensity;
+	BonusCameraShakeOffset = FVector::ZeroVector;
+}
+
+void ADiceGameManager::UpdateBonusCameraShake(float DeltaTime)
+{
+	if (!bBonusCameraShaking) return;
+
+	ADiceCamera* Cam = FindCamera();
+	if (!Cam) return;
+
+	BonusCameraShakeTimer += DeltaTime;
+
+	if (BonusCameraShakeTimer >= BonusCameraShakeDuration)
+	{
+		// Shake complete - remove offset
+		bBonusCameraShaking = false;
+		Cam->SetActorLocation(Cam->GetActorLocation() - BonusCameraShakeOffset);
+		BonusCameraShakeOffset = FVector::ZeroVector;
+		return;
+	}
+
+	// Remove old offset
+	FVector CurrentPos = Cam->GetActorLocation() - BonusCameraShakeOffset;
+
+	// Calculate new shake offset (decay over time)
+	float Progress = BonusCameraShakeTimer / BonusCameraShakeDuration;
+	float DecayedIntensity = BonusCameraShakeIntensity * (1.0f - Progress);
+
+	BonusCameraShakeOffset = FVector(
+		FMath::RandRange(-DecayedIntensity, DecayedIntensity),
+		FMath::RandRange(-DecayedIntensity, DecayedIntensity),
+		FMath::RandRange(-DecayedIntensity * 0.5f, DecayedIntensity * 0.5f)
+	);
+
+	// Apply new offset
+	Cam->SetActorLocation(CurrentPos + BonusCameraShakeOffset);
 }
 
 void ADiceGameManager::OnBonusModifierSelected(bool bHigher)
@@ -4051,6 +4370,9 @@ void ADiceGameManager::OnBonusModifierSelected(bool bHigher)
 	bBonusWon = (bPlayerGuessedHigher == bBonusIsHigher);
 
 	UE_LOG(LogTemp, Warning, TEXT("Player chose: %s"), bHigher ? TEXT(">7") : TEXT("<7"));
+
+	// Type out the masquerade UI (glitchy reverse effect)
+	StartMasqueradeTypewriterOut();
 
 	// Deactivate modifiers
 	for (ADiceModifier* Mod : AllModifiers)
@@ -4062,76 +4384,401 @@ void ADiceGameManager::OnBonusModifierSelected(bool bHigher)
 		}
 	}
 
-	// Move to reveal phase - spawn dice showing the total
+	// Move to reveal phase - start the juicy reveal sequence
 	BonusPhase = 8;
 	BonusAnimTimer = 0.0f;
-	BonusRevealProgress = 0.0f;
-	SpawnBonusRevealDice();
+	StartBonusRevealSequence();
 }
 
-void ADiceGameManager::SpawnBonusRevealDice()
+void ADiceGameManager::StartBonusRevealSequence()
 {
+	// Phase 0: Start shaking the masked dice
+	BonusRevealPhase = 0;
+	RevealShakeTimer = 0.0f;
+	BonusRevealProgress = 0.0f;
+	RevealStrikeProgress = 0.0f;
+
+	// Store original positions for shake
+	MaskedDicePreShakePos.Empty();
+	MaskedDiceFlyVelocity.Empty();
+	for (ADice* Dice : BonusMaskedDice)
+	{
+		if (Dice)
+		{
+			MaskedDicePreShakePos.Add(Dice->GetActorLocation());
+			MaskedDiceFlyVelocity.Add(FVector::ZeroVector);
+		}
+	}
+
+	// Spawn the reveal dice (with actual number) off-screen, ready to strike
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	// Spawn reveal dice between enemy dice, above table
 	FVector WorldCenter = GetLineupWorldCenter();
 	float LineupDir = FMath::DegreesToRadians(LineupYaw);
 	FVector ForwardDir = FVector(FMath::Cos(LineupDir), -FMath::Sin(LineupDir), 0.0f);
-	FVector SpawnPos = WorldCenter - ForwardDir * EnemyRowOffset;
-	SpawnPos.Z = WorldCenter.Z + 80.0f;  // Start high
 
-	BonusRevealDice = GetWorld()->SpawnActor<ADice>(ADice::StaticClass(), SpawnPos, FRotator::ZeroRotator, SpawnParams);
+	// Start position: far behind, will strike toward masked dice
+	RevealDiceStartPos = WorldCenter + ForwardDir * 200.0f;
+	RevealDiceStartPos.Z = WorldCenter.Z + 50.0f;
+
+	// Target: center of masked dice
+	RevealDiceTargetPos = WorldCenter + ForwardDir * EnemyRowOffset;
+	RevealDiceTargetPos.Z = WorldCenter.Z + DiceLineupHeight;
+
+	BonusRevealDice = GetWorld()->SpawnActor<ADice>(ADice::StaticClass(), RevealDiceStartPos, FRotator::ZeroRotator, SpawnParams);
 	if (BonusRevealDice)
 	{
-		// Use masked mesh if set, otherwise use enemy mesh
-		UStaticMesh* MeshToUse = MaskedDiceMesh ? MaskedDiceMesh : EnemyDiceMesh;
-		if (MeshToUse)
+		// Use ENEMY mesh (with visible numbers), not masked
+		if (EnemyDiceMesh)
 		{
-			BonusRevealDice->SetCustomMesh(MeshToUse, CustomMeshScale);
+			BonusRevealDice->SetCustomMesh(EnemyDiceMesh, CustomMeshScale);
 		}
-		UMaterialInterface* MatToUse = MaskedDiceMaterial ? MaskedDiceMaterial : EnemyDiceMaterial;
-		if (MatToUse)
+		if (EnemyDiceMaterial)
 		{
-			BonusRevealDice->SetCustomMaterial(MatToUse);
+			BonusRevealDice->SetCustomMaterial(EnemyDiceMaterial);
 		}
-		// Show the total number on all faces
+		// Setup like normal enemy dice - show the total sum on ALL faces
+		BonusRevealDice->bShowDebugNumbers = false;  // No debug overlay
+		BonusRevealDice->DiceSize = DiceScale;
+		BonusRevealDice->SetTextSettings(DiceTextSize, DiceTextOffset);  // Must be before SetAllFacesText
+		BonusRevealDice->SetTextColor(EnemyTextColor);
 		BonusRevealDice->SetAllFacesText(FString::FromInt(BonusEnemyTotal));
-		BonusRevealDice->SetActorScale3D(FVector(DiceScale));  // Same scale as other dice
-		BonusRevealDice->SetTextColor(bBonusWon ? FColor::Green : FColor::Red);
+		BonusRevealDice->SetFaceNumbersVisible(true);  // Always show the number
+		BonusRevealDice->SetActorHiddenInGame(true);  // Hidden until strike
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("Reveal dice spawned showing: %d"), BonusEnemyTotal);
+	UE_LOG(LogTemp, Warning, TEXT("Starting bonus reveal sequence. Total: %d"), BonusEnemyTotal);
 }
 
 void ADiceGameManager::UpdateBonusReveal(float DeltaTime)
 {
-	BonusRevealProgress += DeltaTime * 2.0f;
+	BonusRevealProgress += DeltaTime;
 
-	if (BonusRevealDice)
+	FVector WorldCenter = GetLineupWorldCenter();
+	float LineupDir = FMath::DegreesToRadians(LineupYaw);
+	FVector ForwardDir = FVector(FMath::Cos(LineupDir), -FMath::Sin(LineupDir), 0.0f);
+	FVector RightDir = FVector(FMath::Sin(LineupDir), FMath::Cos(LineupDir), 0.0f);
+
+	switch (BonusRevealPhase)
 	{
-		// Animate reveal dice dropping and scaling
-		FVector WorldCenter = GetLineupWorldCenter();
-		float LineupDir = FMath::DegreesToRadians(LineupYaw);
-		FVector ForwardDir = FVector(FMath::Cos(LineupDir), -FMath::Sin(LineupDir), 0.0f);
-		FVector TargetPos = WorldCenter - ForwardDir * EnemyRowOffset;
-		TargetPos.Z = WorldCenter.Z + DiceLineupHeight + 20.0f;
+		case 0:  // Shake masked dice
+		{
+			RevealShakeTimer += DeltaTime;
+			float ShakeDuration = 0.8f;
 
-		FVector StartPos = TargetPos;
-		StartPos.Z += 60.0f;
+			// Shake intensity increases
+			float ShakeIntensity = FMath::Min(RevealShakeTimer / ShakeDuration, 1.0f) * 8.0f;
 
-		float T = FMath::Clamp(BonusRevealProgress, 0.0f, 1.0f);
-		float EasedT = EaseOutElastic(T);
+			for (int32 i = 0; i < BonusMaskedDice.Num(); i++)
+			{
+				if (BonusMaskedDice[i] && MaskedDicePreShakePos.IsValidIndex(i))
+				{
+					FVector ShakeOffset = FVector(
+						FMath::RandRange(-ShakeIntensity, ShakeIntensity),
+						FMath::RandRange(-ShakeIntensity, ShakeIntensity),
+						FMath::RandRange(0.0f, ShakeIntensity * 0.5f)
+					);
+					BonusMaskedDice[i]->SetActorLocation(MaskedDicePreShakePos[i] + ShakeOffset);
+				}
+			}
 
-		FVector NewPos = FMath::Lerp(StartPos, TargetPos, FMath::Clamp(T * 1.5f, 0.0f, 1.0f));
-		float ScalePulse = 1.0f + FMath::Sin(BonusRevealProgress * PI * 2.0f) * 0.15f * (1.0f - T);
-		BonusRevealDice->SetActorLocation(NewPos);
-		BonusRevealDice->SetActorScale3D(FVector(DiceScale * ScalePulse));
-	}
+			if (RevealShakeTimer >= ShakeDuration)
+			{
+				// Transition to strike phase
+				BonusRevealPhase = 1;
+				RevealStrikeProgress = 0.0f;
+				if (BonusRevealDice)
+				{
+					BonusRevealDice->SetActorHiddenInGame(false);
+				}
+			}
+			break;
+		}
 
-	if (BonusRevealProgress >= 1.5f)
-	{
-		ShowBonusResult();
+		case 1:  // Strike incoming - reveal dice flies in
+		{
+			RevealStrikeProgress += DeltaTime * 4.0f;  // Fast!
+
+			if (BonusRevealDice)
+			{
+				float T = FMath::Clamp(RevealStrikeProgress, 0.0f, 1.0f);
+				FVector NewPos = FMath::Lerp(RevealDiceStartPos, RevealDiceTargetPos, T);
+
+				// Add rotation during flight
+				FRotator NewRot = BonusRevealDice->GetActorRotation();
+				NewRot.Pitch += DeltaTime * 1500.0f;
+				NewRot.Yaw += DeltaTime * 800.0f;
+
+				BonusRevealDice->SetActorLocation(NewPos);
+				BonusRevealDice->SetActorRotation(NewRot);
+			}
+
+			if (RevealStrikeProgress >= 1.0f)
+			{
+				// Impact! Camera shake on hit
+				StartBonusCameraShake(0.4f, 8.0f);
+
+				// Calculate fly velocities for masked dice
+				for (int32 i = 0; i < BonusMaskedDice.Num(); i++)
+				{
+					if (BonusMaskedDice[i])
+					{
+						FVector DicePos = BonusMaskedDice[i]->GetActorLocation();
+						FVector ImpactDir = (DicePos - RevealDiceTargetPos).GetSafeNormal();
+						ImpactDir.Z = FMath::RandRange(0.3f, 0.6f);
+						ImpactDir += RightDir * FMath::RandRange(-0.5f, 0.5f);
+						ImpactDir.Normalize();
+
+						float FlySpeed = FMath::RandRange(400.0f, 600.0f);
+						if (MaskedDiceFlyVelocity.IsValidIndex(i))
+						{
+							MaskedDiceFlyVelocity[i] = ImpactDir * FlySpeed;
+						}
+					}
+				}
+
+				BonusRevealPhase = 2;
+				BonusAnimTimer = 0.0f;
+
+				if (SoundManager) SoundManager->PlayDiceRoll();
+			}
+			break;
+		}
+
+		case 2:  // Impact - masked dice fly away, reveal dice settles
+		{
+			BonusAnimTimer += DeltaTime;
+
+			// Fly masked dice away
+			for (int32 i = 0; i < BonusMaskedDice.Num(); i++)
+			{
+				if (BonusMaskedDice[i] && MaskedDiceFlyVelocity.IsValidIndex(i))
+				{
+					FVector Pos = BonusMaskedDice[i]->GetActorLocation();
+					FVector Vel = MaskedDiceFlyVelocity[i];
+
+					// Apply gravity
+					Vel.Z -= 800.0f * DeltaTime;
+					MaskedDiceFlyVelocity[i] = Vel;
+
+					Pos += Vel * DeltaTime;
+					BonusMaskedDice[i]->SetActorLocation(Pos);
+
+					// Spin
+					FRotator Rot = BonusMaskedDice[i]->GetActorRotation();
+					Rot.Pitch += DeltaTime * 600.0f;
+					Rot.Roll += DeltaTime * 400.0f;
+					BonusMaskedDice[i]->SetActorRotation(Rot);
+				}
+			}
+
+			// Reveal dice settles with bounce
+			if (BonusRevealDice)
+			{
+				float SettleT = FMath::Clamp(BonusAnimTimer * 2.0f, 0.0f, 1.0f);
+				float Bounce = FMath::Abs(FMath::Sin(SettleT * PI * 3.0f)) * (1.0f - SettleT) * 15.0f;
+
+				FVector SettlePos = RevealDiceTargetPos;
+				SettlePos.Z += Bounce;
+				BonusRevealDice->SetActorLocation(SettlePos);
+
+				// Settle rotation - all faces show the same number, so just use face 1
+				FRotator TargetRot = GetRotationForFaceUp(1);
+				TargetRot.Yaw += LineupYaw;
+				FRotator CurrentRot = BonusRevealDice->GetActorRotation();
+				BonusRevealDice->SetActorRotation(FMath::Lerp(CurrentRot, TargetRot, DeltaTime * 5.0f));
+			}
+
+			if (BonusAnimTimer >= 1.0f)
+			{
+				BonusRevealPhase = 3;
+				BonusAnimTimer = 0.0f;
+				BonusBounceCount = 0;
+
+				// Store start positions for both dice
+				if (BonusPlayerDice)
+				{
+					BonusPlayerDiceStartPos = BonusPlayerDice->GetActorLocation();
+				}
+				if (BonusRevealDice)
+				{
+					BonusRevealDiceStartPos = BonusRevealDice->GetActorLocation();
+				}
+
+				// Floor level for bouncing
+				BonusResultFloorZ = WorldCenter.Z + DiceLineupHeight;
+
+				// Calculate launch direction and velocity - arc trajectory
+				FVector LaunchDir;
+				if (bBonusWon)
+				{
+					// WON: Launch toward player (back toward camera)
+					LaunchDir = -ForwardDir;
+				}
+				else
+				{
+					// LOST: Launch toward enemy (away from camera)
+					LaunchDir = ForwardDir;
+				}
+
+				// Give both dice initial velocity - arc upward then forward
+				float LaunchSpeed = 250.0f;
+				float LaunchUpward = 350.0f;
+
+				BonusPlayerVelocity = LaunchDir * LaunchSpeed + FVector(0, 0, LaunchUpward);
+				BonusRevealVelocity = LaunchDir * (LaunchSpeed * 0.9f) + FVector(0, 0, LaunchUpward * 1.1f);
+
+				// Add some sideways spread
+				BonusPlayerVelocity += RightDir * FMath::RandRange(-40.0f, 40.0f);
+				BonusRevealVelocity += RightDir * FMath::RandRange(-40.0f, 40.0f);
+
+				// Rotation speeds
+				BonusPlayerRotSpeed = bBonusWon ? 400.0f : 600.0f;
+				BonusRevealRotSpeed = bBonusWon ? 350.0f : 500.0f;
+
+				// Update modifier text to Lucky!/Unlucky :(
+				if (SelectedBonusModifier && SelectedBonusModifier->ModifierText)
+				{
+					if (bBonusWon)
+					{
+						SelectedBonusModifier->ModifierText->SetText(FText::FromString(TEXT("Lucky!")));
+						SelectedBonusModifier->ModifierText->SetTextRenderColor(FColor::Green);
+					}
+					else
+					{
+						SelectedBonusModifier->ModifierText->SetText(FText::FromString(TEXT("Unlucky :(")));
+						SelectedBonusModifier->ModifierText->SetTextRenderColor(FColor::Red);
+					}
+				}
+
+				// Play appropriate sound and camera shake
+				if (bBonusWon)
+				{
+					StartBonusCameraShake(0.3f, 6.0f);
+					if (SoundManager) SoundManager->PlayDiceMatch();
+				}
+				else
+				{
+					StartBonusCameraShake(0.5f, 12.0f);
+					if (SoundManager) SoundManager->PlayError();
+				}
+			}
+			break;
+		}
+
+		case 3:  // Result animation - physics-based arc with bouncing
+		{
+			BonusAnimTimer += DeltaTime;
+
+			float Gravity = 800.0f;
+			float BounceDamping = 0.6f;
+			float FrictionDamping = 0.98f;
+
+			// Update player dice with physics
+			if (BonusPlayerDice)
+			{
+				FVector Pos = BonusPlayerDice->GetActorLocation();
+
+				// Apply gravity
+				BonusPlayerVelocity.Z -= Gravity * DeltaTime;
+
+				// Apply velocity
+				Pos += BonusPlayerVelocity * DeltaTime;
+
+				// Bounce off floor
+				if (Pos.Z < BonusResultFloorZ)
+				{
+					Pos.Z = BonusResultFloorZ;
+					BonusPlayerVelocity.Z = -BonusPlayerVelocity.Z * BounceDamping;
+					BonusPlayerVelocity.X *= FrictionDamping;
+					BonusPlayerVelocity.Y *= FrictionDamping;
+					BonusPlayerRotSpeed *= 0.7f;
+
+					// Camera shake on bounce
+					if (FMath::Abs(BonusPlayerVelocity.Z) > 50.0f)
+					{
+						StartBonusCameraShake(0.15f, 3.0f);
+						if (SoundManager) SoundManager->PlayDiceRoll();
+					}
+				}
+
+				BonusPlayerDice->SetActorLocation(Pos);
+
+				// Rotation - tumble based on velocity
+				FRotator Rot = BonusPlayerDice->GetActorRotation();
+				float RotAmount = BonusPlayerRotSpeed * DeltaTime;
+				if (bBonusWon)
+				{
+					Rot.Yaw += RotAmount;
+					Rot.Pitch += RotAmount * 0.3f;
+				}
+				else
+				{
+					Rot.Roll += RotAmount;
+					Rot.Pitch += RotAmount * 0.5f;
+				}
+				BonusPlayerDice->SetActorRotation(Rot);
+			}
+
+			// Update reveal dice with physics
+			if (BonusRevealDice)
+			{
+				FVector Pos = BonusRevealDice->GetActorLocation();
+
+				// Apply gravity
+				BonusRevealVelocity.Z -= Gravity * DeltaTime;
+
+				// Apply velocity
+				Pos += BonusRevealVelocity * DeltaTime;
+
+				// Bounce off floor
+				if (Pos.Z < BonusResultFloorZ)
+				{
+					Pos.Z = BonusResultFloorZ;
+					BonusRevealVelocity.Z = -BonusRevealVelocity.Z * BounceDamping;
+					BonusRevealVelocity.X *= FrictionDamping;
+					BonusRevealVelocity.Y *= FrictionDamping;
+					BonusRevealRotSpeed *= 0.7f;
+				}
+
+				BonusRevealDice->SetActorLocation(Pos);
+
+				// Rotation
+				FRotator Rot = BonusRevealDice->GetActorRotation();
+				float RotAmount = BonusRevealRotSpeed * DeltaTime;
+				Rot.Yaw += RotAmount * 0.8f;
+				Rot.Roll += RotAmount * 0.4f;
+				BonusRevealDice->SetActorRotation(Rot);
+			}
+
+			// Transition when dice have mostly settled (low velocity)
+			bool bSettled = (BonusPlayerVelocity.Size() < 30.0f && BonusRevealVelocity.Size() < 30.0f)
+						 || BonusAnimTimer >= 2.0f;
+
+			if (bSettled)
+			{
+				// Move to camera pan out phase
+				BonusRevealPhase = 4;
+				BonusAnimTimer = 0.0f;
+
+				// Start camera return
+				StartBonusButtonCameraReturn();
+			}
+			break;
+		}
+
+		case 4:  // Camera pan out, then finish
+		{
+			BonusAnimTimer += DeltaTime;
+
+			// Wait for camera to mostly finish returning
+			if (BonusAnimTimer >= 1.0f)
+			{
+				ShowBonusResult();
+			}
+			break;
+		}
 	}
 }
 
@@ -4143,7 +4790,7 @@ void ADiceGameManager::ShowBonusResult()
 	if (bBonusWon)
 	{
 		BonusDiceModifier = 1;
-		UE_LOG(LogTemp, Warning, TEXT("BONUS WIN! +1 dice. Total was %d (%s than 7)"),
+		UE_LOG(LogTemp, Warning, TEXT("BONUS WIN! +1 dice for next round. Total was %d (%s than 7)"),
 			BonusEnemyTotal, bBonusIsHigher ? TEXT("HIGHER") : TEXT("LOWER"));
 		if (SoundManager) SoundManager->PlayDiceMatch();
 
@@ -4153,13 +4800,15 @@ void ADiceGameManager::ShowBonusResult()
 	else
 	{
 		BonusDiceModifier = -1;
-		UE_LOG(LogTemp, Warning, TEXT("BONUS LOSE! -1 dice. Total was %d (%s than 7)"),
+		UE_LOG(LogTemp, Warning, TEXT("BONUS LOSE! -1 dice for next round. Total was %d (%s than 7)"),
 			BonusEnemyTotal, bBonusIsHigher ? TEXT("HIGHER") : TEXT("LOWER"));
 		if (SoundManager) SoundManager->PlayError();
 	}
 
-	// Apply modifier to next round
-	PlayerNumDice = FMath::Max(1, PlayerNumDice + BonusDiceModifier);
+	// Apply modifier for NEXT ROUND ONLY (temporary bonus)
+	// Base is always 5, bonus gives 6 (win) or 4 (lose)
+	PlayerNumDice = FMath::Clamp(BaseDiceCount + BonusDiceModifier, 4, 6);
+	bBonusActiveThisRound = true;  // Flag that next round uses bonus, will reset after
 }
 
 void ADiceGameManager::EndBonusRound(bool bWon)
@@ -4230,6 +4879,12 @@ void ADiceGameManager::UpdateBonusRound(float DeltaTime)
 
 void ADiceGameManager::CleanupBonusRound()
 {
+	// Mark that bonus round just ended - ContinueToNextRound will handle dice reset logic
+	bBonusRoundJustEnded = true;
+
+	// Type out the masquerade UI if still visible
+	StartMasqueradeTypewriterOut();
+
 	// Destroy masked dice
 	for (ADice* Dice : BonusMaskedDice)
 	{
@@ -4252,6 +4907,27 @@ void ADiceGameManager::CleanupBonusRound()
 	{
 		BonusRevealDice->Destroy();
 		BonusRevealDice = nullptr;
+	}
+
+	// Clear reveal animation state
+	MaskedDicePreShakePos.Empty();
+	MaskedDiceFlyVelocity.Empty();
+	BonusRevealPhase = 0;
+	bBonusDiceSnapping = false;
+	SelectedBonusModifier = nullptr;
+	BonusPlayerVelocity = FVector::ZeroVector;
+	BonusRevealVelocity = FVector::ZeroVector;
+
+	// Stop camera shake if active
+	if (bBonusCameraShaking)
+	{
+		ADiceCamera* Cam = FindCamera();
+		if (Cam)
+		{
+			Cam->SetActorLocation(Cam->GetActorLocation() - BonusCameraShakeOffset);
+		}
+		bBonusCameraShaking = false;
+		BonusCameraShakeOffset = FVector::ZeroVector;
 	}
 
 	// Hide bonus modifiers, restore regular modifiers
@@ -4278,4 +4954,967 @@ void ADiceGameManager::CleanupBonusRound()
 	BonusDiceStartRotations.Empty();
 	BonusDiceTargetPositions.Empty();
 	BonusDiceTargetRotations.Empty();
+}
+
+// ==================== MASQUERADE UI TYPEWRITER ====================
+
+void ADiceGameManager::StartMasqueradeTypewriter()
+{
+	if (!MasqueradeUIActor)
+	{
+		return;
+	}
+
+	// Find the text render component if not cached
+	if (!MasqueradeUIText)
+	{
+		MasqueradeUIText = MasqueradeUIActor->FindComponentByClass<UTextRenderComponent>();
+	}
+
+	if (!MasqueradeUIText)
+	{
+		return;
+	}
+
+	// Store the full text from the component's current text
+	MasqueradeFullText = MasqueradeUIText->Text.ToString();
+	MasqueradeCurrentText = TEXT("");
+	TypewriterTimer = 0.0f;
+	TypewriterIndex = 0;
+	GlitchTimer = 0.0f;
+	bShowingGlitch = false;
+	bTypewriterActive = true;
+	bTypewriterOut = false;  // Typing IN
+
+	// Show the actor and clear the text
+	MasqueradeUIActor->SetActorHiddenInGame(false);
+	MasqueradeUIText->SetText(FText::FromString(TEXT("")));
+
+	UE_LOG(LogTemp, Warning, TEXT("Starting Masquerade typewriter IN: %s"), *MasqueradeFullText);
+}
+
+void ADiceGameManager::StartMasqueradeTypewriterOut()
+{
+	if (!MasqueradeUIActor || !MasqueradeUIText)
+	{
+		return;
+	}
+
+	// If already typing out or not active, just hide
+	if (bTypewriterOut || MasqueradeCurrentText.Len() == 0)
+	{
+		HideMasqueradeUI();
+		return;
+	}
+
+	// Start typing out from current text
+	TypewriterTimer = 0.0f;
+	TypewriterIndex = MasqueradeCurrentText.Len();
+	GlitchTimer = 0.0f;
+	bShowingGlitch = false;
+	bTypewriterActive = true;
+	bTypewriterOut = true;  // Typing OUT
+
+	UE_LOG(LogTemp, Warning, TEXT("Starting Masquerade typewriter OUT"));
+}
+
+void ADiceGameManager::UpdateMasqueradeTypewriter(float DeltaTime)
+{
+	if (!bTypewriterActive || !MasqueradeUIText)
+	{
+		return;
+	}
+
+	TypewriterTimer += DeltaTime;
+	float CharInterval = 1.0f / (TypewriterSpeed * 1.5f);  // Faster for out effect
+
+	// Handle glitch effect
+	if (bShowingGlitch)
+	{
+		GlitchTimer += DeltaTime;
+		if (GlitchTimer > 0.04f)  // Glitch duration
+		{
+			bShowingGlitch = false;
+			GlitchTimer = 0.0f;
+			MasqueradeUIText->SetText(FText::FromString(MasqueradeCurrentText));
+		}
+		else
+		{
+			// Show glitchy text
+			if (MasqueradeCurrentText.Len() > 0)
+			{
+				FString GlitchText = MasqueradeCurrentText;
+				int32 GlitchPos = FMath::RandRange(0, FMath::Max(0, GlitchText.Len() - 1));
+				int32 GlitchCharIdx = FMath::RandRange(0, GlitchChars.Len() - 1);
+				GlitchText[GlitchPos] = GlitchChars[GlitchCharIdx];
+				// Randomly add extra glitch chars
+				if (FMath::FRand() < 0.3f)
+				{
+					GlitchText.AppendChar(GlitchChars[FMath::RandRange(0, GlitchChars.Len() - 1)]);
+				}
+				MasqueradeUIText->SetText(FText::FromString(GlitchText));
+			}
+		}
+		return;
+	}
+
+	if (TypewriterTimer >= CharInterval)
+	{
+		TypewriterTimer = 0.0f;
+
+		if (bTypewriterOut)
+		{
+			// TYPING OUT - remove characters
+			if (MasqueradeCurrentText.Len() > 0)
+			{
+				MasqueradeCurrentText = MasqueradeCurrentText.Left(MasqueradeCurrentText.Len() - 1);
+				TypewriterIndex = MasqueradeCurrentText.Len();
+
+				// Chance to trigger glitch effect
+				if (FMath::FRand() < GlitchChance * 1.5f)  // More glitchy when typing out
+				{
+					bShowingGlitch = true;
+					GlitchTimer = 0.0f;
+				}
+				else
+				{
+					MasqueradeUIText->SetText(FText::FromString(MasqueradeCurrentText));
+				}
+
+				// Typewriter out complete
+				if (MasqueradeCurrentText.Len() == 0)
+				{
+					bTypewriterActive = false;
+					HideMasqueradeUI();
+				}
+			}
+		}
+		else
+		{
+			// TYPING IN - add characters
+			if (TypewriterIndex < MasqueradeFullText.Len())
+			{
+				MasqueradeCurrentText.AppendChar(MasqueradeFullText[TypewriterIndex]);
+				TypewriterIndex++;
+
+				// Chance to trigger glitch effect
+				if (FMath::FRand() < GlitchChance)
+				{
+					bShowingGlitch = true;
+					GlitchTimer = 0.0f;
+				}
+				else
+				{
+					MasqueradeUIText->SetText(FText::FromString(MasqueradeCurrentText));
+				}
+
+				// Typewriter in complete
+				if (TypewriterIndex >= MasqueradeFullText.Len())
+				{
+					bTypewriterActive = false;
+					MasqueradeUIText->SetText(FText::FromString(MasqueradeFullText));
+				}
+			}
+		}
+	}
+}
+
+// ==================== WIN SEQUENCE ====================
+
+void ADiceGameManager::StartWinSequence()
+{
+	WinSequencePhase = 1;  // Start with modifier fade
+	WinSequenceTimer = 0.0f;
+	WinSequenceProgress = 0.0f;
+	WinMaskRotationProgress = 0.0f;
+	WinFadeAlpha = 0.0f;
+
+	// Store mask MESH starting position (we move the mesh, not the actor)
+	AMaskEnemy* Enemy = FindEnemy();
+	if (Enemy && Enemy->Mesh)
+	{
+		// Get current relative position as start
+		WinMaskMeshStartPos = Enemy->Mesh->GetRelativeLocation();
+		WinMaskMeshStartRot = Enemy->Mesh->GetRelativeRotation();
+
+		// Target position - close to player (hardcoded relative position)
+		// Based on: Start X=1340 -> Target X=652 (moves ~688 units toward player)
+		WinMaskMeshTargetPos = FVector(652.0f, WinMaskMeshStartPos.Y, 215.0f);
+		WinMaskMeshTargetRot = FRotator(0.0f, 270.0f, 0.0f);  // Rotates from ~90 to ~270 (180 degree turn)
+
+		UE_LOG(LogTemp, Warning, TEXT("WIN: Mask start pos: %s, target pos: %s"),
+			*WinMaskMeshStartPos.ToString(), *WinMaskMeshTargetPos.ToString());
+	}
+
+	// Setup win camera breathing
+	ADiceCamera* Cam = FindCamera();
+	if (Cam)
+	{
+		bWinCameraBreathing = true;
+		WinCameraBreathTimer = 0.0f;
+		WinCameraBasePos = Cam->GetActorLocation();
+		WinCameraBaseRot = Cam->GetActorRotation();
+	}
+
+	// Initialize modifier fade alphas
+	ModifierFadeAlpha.Empty();
+	for (int32 i = 0; i < AllModifiers.Num(); i++)
+	{
+		ModifierFadeAlpha.Add(1.0f);  // Start fully visible
+	}
+
+	// Update timer text to show victory
+	URoundTimerComponent* Timer = GetRoundTimer();
+	if (Timer)
+	{
+		Timer->SetState(ETimerState::TimeUp);  // Use TimeUp state
+	}
+
+	// Clear all dice immediately
+	for (ADice* Dice : EnemyDice)
+	{
+		if (Dice) Dice->Destroy();
+	}
+	EnemyDice.Empty();
+	for (ADice* Dice : PlayerDice)
+	{
+		if (Dice) Dice->Destroy();
+	}
+	PlayerDice.Empty();
+
+	// Clear results arrays to prevent crashes
+	EnemyResults.Empty();
+	PlayerResults.Empty();
+	PlayerDiceMatched.Empty();
+	EnemyDiceMatched.Empty();
+
+	// Stop any dragging
+	bIsDragging = false;
+	DraggedDice = nullptr;
+	DraggedDiceIndex = -1;
+
+	// Create the fade widget (starts invisible)
+	CreateFadeWidget();
+
+	// Victory camera shake!
+	StartBonusCameraShake(0.6f, 15.0f);
+
+	// Play victory sound
+	if (SoundManager) SoundManager->PlayDiceMatch();
+
+	UE_LOG(LogTemp, Warning, TEXT("WIN SEQUENCE STARTED!"));
+}
+
+void ADiceGameManager::UpdateWinSequence(float DeltaTime)
+{
+	if (WinSequencePhase == 0) return;
+
+	WinSequenceTimer += DeltaTime;
+
+	// Update win camera breathing while sequence is active
+	if (bWinCameraBreathing)
+	{
+		ADiceCamera* Cam = FindCamera();
+		if (Cam)
+		{
+			WinCameraBreathTimer += DeltaTime;
+
+			// Fast, intense breathing - player is excited/nervous
+			float BreathSpeed = 4.0f;  // Much faster than normal
+			float BreathIntensity = 8.0f;  // Stronger movement
+
+			// Multiple sine waves for organic breathing
+			float Breath1 = FMath::Sin(WinCameraBreathTimer * BreathSpeed) * BreathIntensity;
+			float Breath2 = FMath::Sin(WinCameraBreathTimer * BreathSpeed * 1.3f) * (BreathIntensity * 0.4f);
+
+			FVector BreathOffset = FVector(0, 0, Breath1 + Breath2);
+
+			// Add slight forward/back motion
+			float ForwardBreath = FMath::Sin(WinCameraBreathTimer * BreathSpeed * 0.7f) * 3.0f;
+			BreathOffset.X = ForwardBreath;
+
+			Cam->SetActorLocation(WinCameraBasePos + BreathOffset);
+
+			// Subtle rotation shake
+			FRotator BreathRot = WinCameraBaseRot;
+			BreathRot.Pitch += FMath::Sin(WinCameraBreathTimer * BreathSpeed * 0.8f) * 1.5f;
+			BreathRot.Roll += FMath::Sin(WinCameraBreathTimer * BreathSpeed * 1.1f) * 0.8f;
+			Cam->SetActorRotation(BreathRot);
+		}
+	}
+
+	switch (WinSequencePhase)
+	{
+		case 1:  // Modifiers fade out (or wait if no modifiers)
+		{
+			UpdateModifierFade(DeltaTime);
+
+			// Check if all modifiers faded - require at least 1 second even if no modifiers
+			bool bAllFaded = true;
+			for (float Alpha : ModifierFadeAlpha)
+			{
+				if (Alpha > 0.01f)
+				{
+					bAllFaded = false;
+					break;
+				}
+			}
+
+			// Wait minimum 1.5 seconds before moving to mask float phase
+			if ((bAllFaded && WinSequenceTimer >= 1.0f) || WinSequenceTimer >= 2.0f)
+			{
+				// Hide all modifiers
+				for (ADiceModifier* Mod : AllModifiers)
+				{
+					if (Mod) Mod->SetHidden(true);
+				}
+
+				WinSequencePhase = 2;
+				WinSequenceTimer = 0.0f;
+				WinSequenceProgress = 0.0f;
+				WinFadeAlpha = 0.0f;  // Ensure fade starts at 0
+
+				// Play victory sound
+				if (SoundManager) SoundManager->PlayDiceMatch();
+
+				UE_LOG(LogTemp, Warning, TEXT("WIN: Moving to mask float phase"));
+			}
+			break;
+		}
+
+		case 2:  // Mask floats toward camera + rotates + screen fades (all simultaneous)
+		{
+			UpdateMaskFloat(DeltaTime);
+
+			// When mask is close enough and faded, finish
+			if (WinSequenceProgress >= 1.0f && WinFadeAlpha >= 0.95f)
+			{
+				WinSequencePhase = 3;
+				WinSequenceTimer = 0.0f;
+				bWinCameraBreathing = false;  // Stop breathing
+				OnWinSequenceComplete();
+			}
+			break;
+		}
+
+		case 3:  // Done - wait for player input
+		{
+			// Could add "Press any key" logic here
+			break;
+		}
+	}
+}
+
+void ADiceGameManager::UpdateModifierFade(float DeltaTime)
+{
+	float FadeSpeed = 1.5f;
+
+	for (int32 i = 0; i < AllModifiers.Num(); i++)
+	{
+		if (AllModifiers[i] && ModifierFadeAlpha.IsValidIndex(i))
+		{
+			// Stagger the fade based on index
+			float Delay = i * 0.1f;
+			if (WinSequenceTimer > Delay)
+			{
+				ModifierFadeAlpha[i] = FMath::Max(0.0f, ModifierFadeAlpha[i] - DeltaTime * FadeSpeed);
+
+				// Apply fade to modifier text
+				if (AllModifiers[i]->ModifierText)
+				{
+					uint8 Alpha = static_cast<uint8>(ModifierFadeAlpha[i] * 255.0f);
+					FColor CurrentColor = AllModifiers[i]->ModifierText->TextRenderColor;
+					CurrentColor.A = Alpha;
+					AllModifiers[i]->ModifierText->SetTextRenderColor(CurrentColor);
+				}
+			}
+		}
+	}
+}
+
+void ADiceGameManager::UpdateMaskFloat(float DeltaTime)
+{
+	AMaskEnemy* Enemy = FindEnemy();
+	if (!Enemy || !Enemy->Mesh) return;
+
+	float FloatDuration = 6.0f;  // Total time for mask to reach player (slow and dramatic)
+	WinSequenceProgress = FMath::Min(WinSequenceProgress + DeltaTime / FloatDuration, 1.0f);
+
+	// Smooth easing - ease in-out (slow start, slow end)
+	float EasedProgress;
+	if (WinSequenceProgress < 0.5f)
+	{
+		// Ease in (slow start)
+		EasedProgress = 4.0f * WinSequenceProgress * WinSequenceProgress * WinSequenceProgress;
+	}
+	else
+	{
+		// Ease out (slow end)
+		EasedProgress = 1.0f - FMath::Pow(-2.0f * WinSequenceProgress + 2.0f, 3.0f) / 2.0f;
+	}
+
+	// Smoothly interpolate relative position
+	FVector NewRelativePos = FMath::Lerp(WinMaskMeshStartPos, WinMaskMeshTargetPos, EasedProgress);
+
+	// Add eerie floating motion (decreases as it gets closer)
+	float FloatIntensity = 1.0f - EasedProgress * 0.7f;  // Still some float at the end
+	float FloatOffset = FMath::Sin(WinSequenceTimer * 1.5f) * 10.0f * FloatIntensity;
+	float SideFloat = FMath::Sin(WinSequenceTimer * 0.9f) * 6.0f * FloatIntensity;
+	NewRelativePos.Z += FloatOffset;
+	NewRelativePos.Y += SideFloat;
+
+	Enemy->Mesh->SetRelativeLocation(NewRelativePos);
+
+	// Smoothly interpolate rotation (from start yaw to target yaw)
+	WinMaskRotationProgress = EasedProgress;
+	FRotator NewRot = FMath::Lerp(WinMaskMeshStartRot, WinMaskMeshTargetRot, EasedProgress);
+
+	// Add creepy wobble that decreases as it gets closer
+	float WobbleIntensity = 1.0f - EasedProgress * 0.8f;
+	NewRot.Pitch += FMath::Sin(WinSequenceTimer * 2.0f) * 8.0f * WobbleIntensity;
+	NewRot.Roll += FMath::Sin(WinSequenceTimer * 1.7f) * 6.0f * WobbleIntensity;
+
+	Enemy->Mesh->SetRelativeRotation(NewRot);
+
+	// Scale up slightly as it approaches (subtle)
+	float BaseScale = 0.25f;  // Original scale from your data
+	float ScaleMultiplier = BaseScale * (1.0f + EasedProgress * 0.3f);
+	Enemy->Mesh->SetRelativeScale3D(FVector(ScaleMultiplier));
+
+	// === FADE TO BLACK SIMULTANEOUSLY ===
+	// Start fading at 70% progress (mask is close to camera), finish by 100%
+	float FadeStart = 0.7f;
+	if (WinSequenceProgress >= FadeStart)
+	{
+		// Add widget to viewport when fade actually starts (first time only)
+		if (FadeWidgetInstance && !FadeWidgetInstance->IsInViewport())
+		{
+			FadeWidgetInstance->AddToViewport(100);
+			UE_LOG(LogTemp, Warning, TEXT("WIN: Adding fade widget to viewport now"));
+		}
+
+		float FadeProgress = (WinSequenceProgress - FadeStart) / (1.0f - FadeStart);
+		// Ease the fade - smooth
+		float EasedFade = FadeProgress * FadeProgress;  // Ease in (slow start, fast end)
+		WinFadeAlpha = FMath::Min(EasedFade, 1.0f);
+
+		// Update the black image widget opacity
+		if (BlackImageWidget)
+		{
+			BlackImageWidget->SetRenderOpacity(WinFadeAlpha);
+			BlackImageWidget->SetColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, WinFadeAlpha));
+		}
+	}
+}
+
+void ADiceGameManager::UpdateScreenFade(float DeltaTime)
+{
+	float FadeSpeed = 1.5f;  // Time to fully fade
+	WinFadeAlpha = FMath::Min(WinFadeAlpha + DeltaTime / FadeSpeed, 1.0f);
+
+	// Update the black image widget opacity
+	if (BlackImageWidget)
+	{
+		FLinearColor FadeColor = FLinearColor(0.0f, 0.0f, 0.0f, WinFadeAlpha);
+		BlackImageWidget->SetColorAndOpacity(FadeColor);
+	}
+
+	// Update timer text during fade
+	URoundTimerComponent* Timer = GetRoundTimer();
+	if (Timer)
+	{
+		// Find the text component in the timer's owner
+		AActor* TimerOwner = Timer->GetOwner();
+		if (TimerOwner)
+		{
+			UTextRenderComponent* TimerText = TimerOwner->FindComponentByClass<UTextRenderComponent>();
+			if (TimerText)
+			{
+				// Pulse the "VICTORY" text
+				float Pulse = (FMath::Sin(WinSequenceTimer * 4.0f) + 1.0f) * 0.5f;
+				uint8 Green = static_cast<uint8>(180 + Pulse * 75);
+				TimerText->SetText(FText::FromString(TEXT("VICTORY")));
+				TimerText->SetTextRenderColor(FColor(100, Green, 100, 255));
+			}
+		}
+	}
+}
+
+void ADiceGameManager::CreateFadeWidget()
+{
+	if (!FadeWidgetClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FadeWidgetClass not set - screen fade will not work"));
+		return;
+	}
+
+	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+	if (!PC) return;
+
+	// Create the widget but DON'T add to viewport yet
+	FadeWidgetInstance = CreateWidget<UUserWidget>(PC, FadeWidgetClass);
+	if (FadeWidgetInstance)
+	{
+		// Find the BlackImage component - try both possible names
+		BlackImageWidget = Cast<UImage>(FadeWidgetInstance->GetWidgetFromName(TEXT("BlackImage")));
+		if (!BlackImageWidget)
+		{
+			// Try alternate name
+			BlackImageWidget = Cast<UImage>(FadeWidgetInstance->GetWidgetFromName(TEXT("ImageBlack")));
+		}
+
+		if (BlackImageWidget)
+		{
+			// Start fully transparent
+			BlackImageWidget->SetColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
+			BlackImageWidget->SetRenderOpacity(0.0f);
+			UE_LOG(LogTemp, Warning, TEXT("Fade widget created successfully (not added to viewport yet)"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("BlackImage/ImageBlack not found in fade widget! Check widget design."));
+		}
+	}
+}
+
+void ADiceGameManager::OnWinSequenceComplete()
+{
+	UE_LOG(LogTemp, Warning, TEXT("WIN SEQUENCE COMPLETE! Player has claimed the mask."));
+
+	// Hide the mask
+	AMaskEnemy* Enemy = FindEnemy();
+	if (Enemy)
+	{
+		Enemy->SetActorHiddenInGame(true);
+	}
+
+	// Final state - could restart game or show end screen
+}
+
+void ADiceGameManager::HideMasqueradeUI()
+{
+	bTypewriterActive = false;
+	bTypewriterOut = false;
+
+	if (MasqueradeUIActor)
+	{
+		MasqueradeUIActor->SetActorHiddenInGame(true);
+	}
+
+	if (MasqueradeUIText)
+	{
+		MasqueradeUIText->SetText(FText::FromString(TEXT("")));
+	}
+}
+
+// ==================== DICE LABEL TYPEWRITER ====================
+
+void ADiceGameManager::StartDiceLabelTypewriter()
+{
+	if (!DiceLabelActor)
+	{
+		return;
+	}
+
+	// Find the text render component if not cached
+	if (!DiceLabelTextComp)
+	{
+		DiceLabelTextComp = DiceLabelActor->FindComponentByClass<UTextRenderComponent>();
+	}
+
+	if (!DiceLabelTextComp)
+	{
+		return;
+	}
+
+	// Use the configurable label text
+	DiceLabelFullText = DiceLabelText;
+	DiceLabelCurrentText = TEXT("");
+	DiceLabelTypeTimer = 0.0f;
+	DiceLabelTypeIndex = 0;
+	bDiceLabelTypewriterActive = true;
+	bDiceLabelTypewriterOut = false;  // Typing IN
+
+	// Show the actor and clear the text
+	DiceLabelActor->SetActorHiddenInGame(false);
+	DiceLabelTextComp->SetText(FText::FromString(TEXT("")));
+
+	UE_LOG(LogTemp, Warning, TEXT("Starting DiceLabel typewriter IN: %s"), *DiceLabelFullText);
+}
+
+void ADiceGameManager::StartDiceLabelTypewriterOut()
+{
+	if (!DiceLabelActor || !DiceLabelTextComp)
+	{
+		return;
+	}
+
+	// If already typing out or not active, just hide
+	if (bDiceLabelTypewriterOut || DiceLabelCurrentText.Len() == 0)
+	{
+		HideDiceLabel();
+		return;
+	}
+
+	// Start typing OUT (reverse)
+	DiceLabelTypeIndex = DiceLabelCurrentText.Len();
+	DiceLabelTypeTimer = 0.0f;
+	bDiceLabelTypewriterOut = true;
+	bDiceLabelTypewriterActive = true;
+
+	UE_LOG(LogTemp, Warning, TEXT("Starting DiceLabel typewriter OUT"));
+}
+
+void ADiceGameManager::UpdateDiceLabelTypewriter(float DeltaTime)
+{
+	if (!bDiceLabelTypewriterActive || !DiceLabelTextComp)
+	{
+		return;
+	}
+
+	DiceLabelTypeTimer += DeltaTime;
+
+	float CharTime = 1.0f / DiceLabelTypeSpeed;
+
+	if (bDiceLabelTypewriterOut)
+	{
+		// Typing OUT - remove characters
+		if (DiceLabelTypeTimer >= CharTime)
+		{
+			DiceLabelTypeTimer = 0.0f;
+
+			if (DiceLabelTypeIndex > 0)
+			{
+				DiceLabelTypeIndex--;
+				DiceLabelCurrentText = DiceLabelFullText.Left(DiceLabelTypeIndex);
+				DiceLabelTextComp->SetText(FText::FromString(DiceLabelCurrentText));
+			}
+			else
+			{
+				// Done typing out
+				HideDiceLabel();
+			}
+		}
+	}
+	else
+	{
+		// Typing IN - add characters
+		if (DiceLabelTypeTimer >= CharTime)
+		{
+			DiceLabelTypeTimer = 0.0f;
+
+			if (DiceLabelTypeIndex < DiceLabelFullText.Len())
+			{
+				DiceLabelTypeIndex++;
+				DiceLabelCurrentText = DiceLabelFullText.Left(DiceLabelTypeIndex);
+				DiceLabelTextComp->SetText(FText::FromString(DiceLabelCurrentText));
+			}
+			else
+			{
+				// Done typing in - keep visible
+				bDiceLabelTypewriterActive = false;
+			}
+		}
+	}
+}
+
+void ADiceGameManager::HideDiceLabel()
+{
+	bDiceLabelTypewriterActive = false;
+	bDiceLabelTypewriterOut = false;
+
+	if (DiceLabelActor)
+	{
+		DiceLabelActor->SetActorHiddenInGame(true);
+	}
+
+	if (DiceLabelTextComp)
+	{
+		DiceLabelTextComp->SetText(FText::FromString(TEXT("")));
+	}
+}
+
+// ==================== LOSE SEQUENCE ====================
+
+void ADiceGameManager::StartLoseSequence()
+{
+	LoseSequencePhase = 1;  // Start with breathing + pan down
+	LoseSequenceTimer = 0.0f;
+	LoseSequenceProgress = 0.0f;
+	LoseFadeAlpha = 0.0f;
+
+	// Store camera start position
+	ADiceCamera* Cam = FindCamera();
+	if (Cam)
+	{
+		LoseCameraStartPos = Cam->GetActorLocation();
+		LoseCameraStartRot = Cam->GetActorRotation();
+
+		// Move camera forward if offset is set
+		if (LoseCameraForwardOffset != 0.0f)
+		{
+			FVector ForwardOffset = Cam->GetActorForwardVector() * LoseCameraForwardOffset;
+			LoseCameraStartPos += ForwardOffset;
+			Cam->SetActorLocation(LoseCameraStartPos);
+		}
+
+		// Target rotation - look down from where we are
+		LoseCameraTargetRot = LoseCameraStartRot;
+		LoseCameraTargetRot.Pitch = -70.0f;  // Look down
+
+		bLoseCameraBreathing = true;
+		LoseCameraBreathTimer = 0.0f;
+	}
+
+	// Clear all dice immediately
+	for (ADice* Dice : EnemyDice)
+	{
+		if (Dice) Dice->Destroy();
+	}
+	EnemyDice.Empty();
+	for (ADice* Dice : PlayerDice)
+	{
+		if (Dice) Dice->Destroy();
+	}
+	PlayerDice.Empty();
+
+	// Clear arrays
+	EnemyResults.Empty();
+	PlayerResults.Empty();
+	PlayerDiceMatched.Empty();
+	EnemyDiceMatched.Empty();
+
+	// Stop any dragging
+	bIsDragging = false;
+	DraggedDice = nullptr;
+	DraggedDiceIndex = -1;
+
+	// Hide modifiers
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod) Mod->SetHidden(true);
+	}
+
+	// Create fade widget (starts invisible)
+	CreateFadeWidget();
+
+	UE_LOG(LogTemp, Warning, TEXT("LOSE SEQUENCE STARTED!"));
+}
+
+void ADiceGameManager::UpdateLoseSequence(float DeltaTime)
+{
+	if (LoseSequencePhase == 0) return;
+
+	LoseSequenceTimer += DeltaTime;
+
+	// Breathing effect during lose sequence (shaky, panicked)
+	if (bLoseCameraBreathing)
+	{
+		ADiceCamera* Cam = FindCamera();
+		if (Cam)
+		{
+			LoseCameraBreathTimer += DeltaTime;
+
+			// Fast, panicked breathing
+			float BreathSpeed = 5.0f;
+			float BreathIntensity = 6.0f;
+
+			float Breath1 = FMath::Sin(LoseCameraBreathTimer * BreathSpeed) * BreathIntensity;
+			float Breath2 = FMath::Sin(LoseCameraBreathTimer * BreathSpeed * 1.5f) * (BreathIntensity * 0.3f);
+
+			FVector BreathOffset = FVector(0, 0, Breath1 + Breath2);
+			Cam->SetActorLocation(LoseCameraStartPos + BreathOffset);
+		}
+	}
+
+	switch (LoseSequencePhase)
+	{
+		case 1:  // Breathing + camera pan down
+		{
+			float PanDuration = 2.0f;
+			LoseSequenceProgress = FMath::Min(LoseSequenceProgress + DeltaTime / PanDuration, 1.0f);
+
+			// Ease out for smooth pan
+			float EasedProgress = 1.0f - FMath::Pow(1.0f - LoseSequenceProgress, 3.0f);
+
+			ADiceCamera* Cam = FindCamera();
+			if (Cam)
+			{
+				FRotator NewRot = FMath::Lerp(LoseCameraStartRot, LoseCameraTargetRot, EasedProgress);
+				// Add breathing shake
+				NewRot.Pitch += FMath::Sin(LoseCameraBreathTimer * 5.0f) * 2.0f;
+				NewRot.Roll += FMath::Sin(LoseCameraBreathTimer * 4.0f) * 1.0f;
+				Cam->SetActorRotation(NewRot);
+			}
+
+			if (LoseSequenceProgress >= 1.0f)
+			{
+				LoseSequencePhase = 2;
+				LoseSequenceTimer = 0.0f;
+				LoseSequenceProgress = 0.0f;
+
+				// Spawn and drop player mask + knife
+				SpawnAndDropPlayerMask();
+				DropLastKnife();
+			}
+			break;
+		}
+
+		case 2:  // Mask drop + knife drop + start fade
+		{
+			float DropDuration = 2.5f;
+			LoseSequenceProgress = FMath::Min(LoseSequenceProgress + DeltaTime / DropDuration, 1.0f);
+
+			// Start fading at 30%
+			if (LoseSequenceProgress >= 0.3f)
+			{
+				float FadeProgress = (LoseSequenceProgress - 0.3f) / 0.7f;
+				LoseFadeAlpha = FMath::Min(FadeProgress * FadeProgress, 1.0f);
+
+				// Add widget to viewport when fade starts
+				if (FadeWidgetInstance && !FadeWidgetInstance->IsInViewport())
+				{
+					FadeWidgetInstance->AddToViewport(100);
+				}
+
+				if (BlackImageWidget)
+				{
+					BlackImageWidget->SetRenderOpacity(LoseFadeAlpha);
+					BlackImageWidget->SetColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, LoseFadeAlpha));
+				}
+			}
+
+			if (LoseSequenceProgress >= 1.0f && LoseFadeAlpha >= 0.95f)
+			{
+				LoseSequencePhase = 3;
+				LoseSequenceTimer = 0.0f;
+				bLoseCameraBreathing = false;
+				OnLoseSequenceComplete();
+			}
+			break;
+		}
+
+		case 3:  // Done
+		{
+			// Could add "Press any key to restart" logic here
+			break;
+		}
+	}
+}
+
+void ADiceGameManager::SpawnAndDropPlayerMask()
+{
+	if (!PlayerMaskMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("LOSE: PlayerMaskMesh not set!"));
+		return;
+	}
+
+	ADiceCamera* Cam = FindCamera();
+	if (!Cam) return;
+
+	// Create a new actor to hold the dropping mask
+	FVector SpawnPos = Cam->GetActorLocation() + Cam->GetActorForwardVector() * 50.0f;
+	SpawnPos.Z += 30.0f;  // Start above camera view
+	PlayerMaskDropStartPos = SpawnPos;
+
+	// Use configurable rotation + camera yaw
+	FRotator FacingRot = PlayerMaskDropRotation;
+	FacingRot.Yaw += Cam->GetActorRotation().Yaw;
+
+	// Create static mesh component dynamically
+	AActor* MaskActor = GetWorld()->SpawnActor<AActor>(AActor::StaticClass(), SpawnPos, FacingRot);
+	if (MaskActor)
+	{
+		DroppedPlayerMask = NewObject<UStaticMeshComponent>(MaskActor);
+		if (DroppedPlayerMask)
+		{
+			DroppedPlayerMask->SetStaticMesh(PlayerMaskMesh);
+			if (PlayerMaskMaterial)
+			{
+				DroppedPlayerMask->SetMaterial(0, PlayerMaskMaterial);
+			}
+			DroppedPlayerMask->RegisterComponent();
+			DroppedPlayerMask->AttachToComponent(MaskActor->GetRootComponent(), FAttachmentTransformRules::KeepWorldTransform);
+			MaskActor->SetRootComponent(DroppedPlayerMask);
+
+			DroppedPlayerMask->SetWorldLocation(SpawnPos);
+			DroppedPlayerMask->SetWorldRotation(FacingRot);
+			DroppedPlayerMask->SetWorldScale3D(FVector(PlayerMaskDropScale));
+
+			// Enable physics for rigid body drop
+			DroppedPlayerMask->SetSimulatePhysics(true);
+			DroppedPlayerMask->SetEnableGravity(true);
+			DroppedPlayerMask->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			DroppedPlayerMask->SetCollisionResponseToAllChannels(ECR_Block);
+
+			// Add gentle tumble as it falls
+			DroppedPlayerMask->AddAngularImpulseInDegrees(FVector(
+				FMath::RandRange(-20.0f, 20.0f),
+				FMath::RandRange(-20.0f, 20.0f),
+				FMath::RandRange(-10.0f, 10.0f)
+			));
+
+			UE_LOG(LogTemp, Warning, TEXT("LOSE: Player mask spawned and dropping"));
+		}
+	}
+}
+
+void ADiceGameManager::DropLastKnife()
+{
+	// Get the player hand to find the knife
+	UPlayerHandComponent* PlayerHand = GetPlayerHand();
+	if (!PlayerHand)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("LOSE: No player hand for knife drop"));
+		return;
+	}
+
+	// Find the knife mesh in the hand actor
+	AActor* HandActor = PlayerHand->GetOwner();
+	if (!HandActor) return;
+
+	// Look for a static mesh component that might be the knife
+	TArray<UStaticMeshComponent*> MeshComps;
+	HandActor->GetComponents<UStaticMeshComponent>(MeshComps);
+
+	for (UStaticMeshComponent* Mesh : MeshComps)
+	{
+		if (Mesh && Mesh->GetName().Contains(TEXT("Knife")))
+		{
+			// Found the knife - enable physics
+			Mesh->SetSimulatePhysics(true);
+			Mesh->SetEnableGravity(true);
+			Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			Mesh->SetCollisionResponseToAllChannels(ECR_Block);
+
+			// Add impulse to make it tumble
+			Mesh->AddImpulse(FVector(0, 0, -100.0f));
+			Mesh->AddAngularImpulseInDegrees(FVector(
+				FMath::RandRange(-100.0f, 100.0f),
+				FMath::RandRange(-100.0f, 100.0f),
+				FMath::RandRange(-50.0f, 50.0f)
+			));
+
+			DroppedKnife = Mesh;
+			UE_LOG(LogTemp, Warning, TEXT("LOSE: Knife dropping"));
+			break;
+		}
+	}
+}
+
+void ADiceGameManager::OnLoseSequenceComplete()
+{
+	UE_LOG(LogTemp, Warning, TEXT("LOSE SEQUENCE COMPLETE! Game Over."));
+
+	// Clean up dropped mask
+	if (DroppedPlayerMask)
+	{
+		AActor* MaskOwner = DroppedPlayerMask->GetOwner();
+		if (MaskOwner)
+		{
+			MaskOwner->Destroy();
+		}
+		DroppedPlayerMask = nullptr;
+	}
 }

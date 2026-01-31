@@ -29,6 +29,7 @@ UIRButtonComponent::UIRButtonComponent()
 	bButtonActive = false;
 	bIsPressed = false;
 	bAnimating = false;
+	bWasMouseDown = false;
 
 	SwitchMesh = nullptr;
 	BaseMesh = nullptr;
@@ -115,10 +116,9 @@ void UIRButtonComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 		APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
 		if (PC)
 		{
-			static bool bWasMouseDown = false;
 			bool bMouseDown = PC->IsInputKeyDown(EKeys::LeftMouseButton);
 
-			// Click detection
+			// Click detection (bWasMouseDown is now a member variable, not shared between instances)
 			if (bMouseDown && !bWasMouseDown && IsMouseOverSwitch())
 			{
 				OnClicked();

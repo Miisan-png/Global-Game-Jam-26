@@ -13,6 +13,8 @@ class UPlayerHandComponent;
 class URoundTimerComponent;
 class ASoundManager;
 class UHangingBoardComponent;
+class UUserWidget;
+class UImage;
 class UIRButtonComponent;
 
 UENUM(BlueprintType)
@@ -127,6 +129,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
 	float CameraPanSpeed;
 
+	// ===== DICE LABEL (Fold prompt) =====
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Label", meta = (ToolTip = "TextRender actor for fold prompt - typewriter style"))
+	AActor* DiceLabelActor;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Label")
+	FString DiceLabelText;  // e.g. "SPACE TO FOLD"
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Label")
+	float DiceLabelTypeSpeed;  // Characters per second
+
 	// ===== DRAGGING =====
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dragging")
 	float DragHeight;
@@ -203,6 +215,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
 	bool bDebugBonusCamera;  // Lock camera to bonus view for testing
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round", meta = (ToolTip = "TextRender actor for Masquerade UI - shows with glitchy typewriter effect"))
+	AActor* MasqueradeUIActor;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	float TypewriterSpeed;  // Characters per second
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	float GlitchChance;  // Chance of glitch per character (0-1)
+
 	// Masked Dice visuals
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
 	UStaticMesh* MaskedDiceMesh;
@@ -263,6 +284,8 @@ private:
 	void OnConfirmSelection();
 	void OnCancelSelection();
 	void OnGiveUpPressed();
+	void OnDebugKillEnemy();  // X key - damage enemy for testing
+	void OnDebugKillPlayer(); // Z key - damage player for testing
 	void UpdateDiceDebugVisibility();
 
 	void EnemyThrowDice();
@@ -501,13 +524,47 @@ private:
 	int32 BonusEnemyTotal;             // Sum of enemy dice (not 7)
 	bool bBonusIsHigher;               // True if total > 7
 	bool bPlayerGuessedHigher;         // What player chose
-	int32 BonusDiceModifier;           // +1 or -1 for next round
+	int32 BonusDiceModifier;           // +1 or -1 for next round (temporary)
 	bool bBonusWon;                    // Result of bonus round
+	bool bBonusActiveThisRound;        // True if we're in the bonus-affected round (reset after)
+	bool bBonusRoundJustEnded;         // True right after bonus round ends, cleared on next ContinueToNextRound
+	static const int32 BaseDiceCount = 5;  // Default dice count to return to
 
 	float BonusAnimTimer;
 	float BonusLineupProgress;
 	float BonusPlayerLineupProgress;
 	float BonusRevealProgress;
+
+	// Masquerade UI Typewriter
+	class UTextRenderComponent* MasqueradeUIText;
+	FString MasqueradeFullText;
+	FString MasqueradeCurrentText;
+	float TypewriterTimer;
+	int32 TypewriterIndex;
+	bool bTypewriterActive;
+	bool bTypewriterOut;  // True = typing out (reverse), False = typing in
+	float GlitchTimer;
+	bool bShowingGlitch;
+	FString GlitchChars;
+
+	void StartMasqueradeTypewriter();
+	void StartMasqueradeTypewriterOut();  // Reverse effect
+	void UpdateMasqueradeTypewriter(float DeltaTime);
+	void HideMasqueradeUI();
+
+	// Dice Label Typewriter (fold prompt)
+	class UTextRenderComponent* DiceLabelTextComp;
+	FString DiceLabelFullText;
+	FString DiceLabelCurrentText;
+	float DiceLabelTypeTimer;
+	int32 DiceLabelTypeIndex;
+	bool bDiceLabelTypewriterActive;
+	bool bDiceLabelTypewriterOut;
+
+	void StartDiceLabelTypewriter();
+	void StartDiceLabelTypewriterOut();
+	void UpdateDiceLabelTypewriter(float DeltaTime);
+	void HideDiceLabel();
 
 	TArray<FVector> BonusDiceStartPositions;
 	TArray<FRotator> BonusDiceStartRotations;
@@ -530,13 +587,55 @@ private:
 	void LineUpBonusPlayerDice(float DeltaTime);
 	void StartBonusPlayerTurn();
 	void OnBonusModifierSelected(bool bHigher);
-	void SpawnBonusRevealDice();
+	void StartBonusRevealSequence();
 	void UpdateBonusReveal(float DeltaTime);
 	void ShowBonusResult();
 	void EndBonusRound(bool bWon);
 	void UpdateBonusRound(float DeltaTime);
 	void CleanupBonusRound();
 	int32 GenerateBonusTotal();
+
+	// Bonus reveal animation states
+	// RevealPhase: 0=shake, 1=strike incoming, 2=impact/fly away, 3=result slide, 4=done
+	int32 BonusRevealPhase;
+	float RevealShakeTimer;
+	float RevealStrikeProgress;
+	FVector RevealDiceStartPos;
+	FVector RevealDiceTargetPos;
+	TArray<FVector> MaskedDicePreShakePos;
+	TArray<FVector> MaskedDiceFlyVelocity;
+
+	// Bonus dice snap animation (for player dice placement)
+	bool bBonusDiceSnapping;
+	float BonusSnapProgress;
+	FVector BonusSnapStartPos;
+	FRotator BonusSnapStartRot;
+	FVector BonusSnapTargetPos;
+	FRotator BonusSnapTargetRot;
+	bool bBonusSnapChoseHigher;  // Store choice during snap animation
+	ADiceModifier* SelectedBonusModifier;  // Track which modifier was chosen
+	void StartBonusDiceSnap(ADiceModifier* Modifier, bool bChoseHigher);
+	void UpdateBonusDiceSnap(float DeltaTime);
+
+	// Bonus result animation state (physics-based arc)
+	FVector BonusRevealDiceStartPos;
+	FRotator BonusRevealDiceStartRot;
+	FVector BonusResultTargetPos;  // Where both dice bounce to
+	FVector BonusPlayerVelocity;   // Physics velocity for player dice
+	FVector BonusRevealVelocity;   // Physics velocity for reveal dice
+	float BonusPlayerRotSpeed;     // Rotation speed
+	float BonusRevealRotSpeed;
+	int32 BonusBounceCount;        // Track bounces for damping
+	float BonusResultFloorZ;       // Floor level for bouncing
+
+	// Bonus camera shake
+	bool bBonusCameraShaking;
+	float BonusCameraShakeTimer;
+	float BonusCameraShakeDuration;
+	float BonusCameraShakeIntensity;
+	FVector BonusCameraShakeOffset;
+	void StartBonusCameraShake(float Duration, float Intensity);
+	void UpdateBonusCameraShake(float DeltaTime);
 
 	// Bonus round camera
 	void StartBonusButtonCameraFocus();
@@ -549,4 +648,88 @@ private:
 	float BonusCameraProgress;
 	bool bBonusCameraFocusing;
 	bool bBonusCameraReturning;
+
+	// ===== WIN SEQUENCE =====
+	// Phases: 0=inactive, 1=modifiers fade, 2=mask float toward camera + fade, 3=done
+	int32 WinSequencePhase;
+	float WinSequenceTimer;
+	float WinSequenceProgress;
+
+	// Mask mesh animation (move mesh component, not actor)
+	FVector WinMaskMeshStartPos;      // Mesh component's starting relative position
+	FRotator WinMaskMeshStartRot;     // Mesh component's starting relative rotation
+	FVector WinMaskMeshTargetPos;     // Target RELATIVE position (close to player)
+	FRotator WinMaskMeshTargetRot;    // Target RELATIVE rotation
+	float WinMaskRotationProgress;    // For rotation tracking
+
+	// Win camera breathing (faster, more intense)
+	bool bWinCameraBreathing;
+	float WinCameraBreathTimer;
+	FVector WinCameraBasePos;
+	FRotator WinCameraBaseRot;
+
+	// Fade to black - UMG Widget
+	UPROPERTY(EditAnywhere, Category = "Win Sequence", meta = (ToolTip = "UMG Widget with a UImage named BlackImage for fade effect"))
+	TSubclassOf<UUserWidget> FadeWidgetClass;
+
+	UPROPERTY()
+	UUserWidget* FadeWidgetInstance;
+
+	UPROPERTY()
+	UImage* BlackImageWidget;
+
+	float WinFadeAlpha;
+
+	// Modifier fade
+	TArray<float> ModifierFadeAlpha;
+
+	void StartWinSequence();
+	void UpdateWinSequence(float DeltaTime);
+	void UpdateModifierFade(float DeltaTime);
+	void UpdateMaskFloat(float DeltaTime);
+	void UpdateScreenFade(float DeltaTime);
+	void OnWinSequenceComplete();
+	void CreateFadeWidget();
+
+	// ===== LOSE SEQUENCE =====
+	// Phases: 0=inactive, 1=breathing+pan down, 2=mask drop+knife drop, 3=fade out, 4=done
+	UPROPERTY(EditAnywhere, Category = "Lose Sequence", meta = (ToolTip = "Static mesh for player's mask that drops on lose"))
+	UStaticMesh* PlayerMaskMesh;
+
+	UPROPERTY(EditAnywhere, Category = "Lose Sequence")
+	UMaterialInterface* PlayerMaskMaterial;
+
+	UPROPERTY(EditAnywhere, Category = "Lose Sequence")
+	float PlayerMaskDropScale;
+
+	UPROPERTY(EditAnywhere, Category = "Lose Sequence", meta = (ToolTip = "Rotation offset for dropped mask"))
+	FRotator PlayerMaskDropRotation;
+
+	UPROPERTY(EditAnywhere, Category = "Lose Sequence", meta = (ToolTip = "How far camera moves forward before looking down"))
+	float LoseCameraForwardOffset;
+
+	int32 LoseSequencePhase;
+	float LoseSequenceTimer;
+	float LoseSequenceProgress;
+	float LoseFadeAlpha;
+
+	// Camera pan down
+	FVector LoseCameraStartPos;
+	FRotator LoseCameraStartRot;
+	FRotator LoseCameraTargetRot;  // Looking down
+	bool bLoseCameraBreathing;
+	float LoseCameraBreathTimer;
+
+	// Player mask drop (not UPROPERTY - owned by spawned actor)
+	UStaticMeshComponent* DroppedPlayerMask;
+	FVector PlayerMaskDropStartPos;
+
+	// Knife drop (not UPROPERTY - just a reference)
+	UStaticMeshComponent* DroppedKnife;
+
+	void StartLoseSequence();
+	void UpdateLoseSequence(float DeltaTime);
+	void SpawnAndDropPlayerMask();
+	void DropLastKnife();
+	void OnLoseSequenceComplete();
 };

@@ -92,6 +92,9 @@ private:
 	FVector SwitchPressedPos;
 	float AnimProgress;
 
+	// Mouse tracking (per-instance, not shared)
+	bool bWasMouseDown;
+
 	// Camera
 	ADiceCamera* DiceCamera;
 	FVector OriginalCameraPos;

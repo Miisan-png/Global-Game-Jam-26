@@ -92,8 +92,10 @@ public:
 	UFUNCTION(BlueprintCallable)
 	void UpdateBasePosition();
 
-private:
+	UFUNCTION(BlueprintCallable)
 	void UpdateVisuals();
+
+private:
 	FLinearColor BaseColor;
 	FLinearColor HighlightColor;
 	FLinearColor UsedColor;

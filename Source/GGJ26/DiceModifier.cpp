@@ -133,7 +133,7 @@ bool ADiceModifier::CanApplyToValue(int32 Value)
 		case EModifierType::PlusOne:
 			return Value < 6;  // Can't go above 6
 		case EModifierType::PlusTwo:
-			return Value < 6;  // 6 can't use, but 5+2=6 is still useful
+			return Value <= 4;  // 5+2=7 and 6+2=8 are invalid (can't go above 6)
 		case EModifierType::Flip:
 		case EModifierType::RerollOne:
 		case EModifierType::RerollAll:
@@ -162,10 +162,9 @@ void ADiceModifier::SetHidden(bool bHide)
 {
 	bIsHidden = bHide;
 
-	if (ModifierText)
-	{
-		ModifierText->SetVisibility(!bHide);
-	}
+	// Hide the entire actor and all children
+	SetActorHiddenInGame(bHide);
+
 	if (CollisionBox)
 	{
 		CollisionBox->SetCollisionEnabled(bHide ? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics);

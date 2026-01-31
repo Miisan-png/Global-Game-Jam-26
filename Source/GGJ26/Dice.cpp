@@ -379,7 +379,7 @@ void ADice::SetAllFacesText(const FString& Text)
 		if (TextComp)
 		{
 			TextComp->SetText(FText::FromString(Text));
-			TextComp->SetWorldSize(FaceTextSize * 0.6f);  // Smaller to fit "YES" text
+			TextComp->SetWorldSize(FaceTextSize * 1.2f);  // Larger for number display
 			// Push text further out so it's visible
 			FVector LocalPos = GetFaceNormal(i + 1) * (FaceTextOffset + 5.0f);
 			TextComp->SetRelativeLocation(LocalPos);

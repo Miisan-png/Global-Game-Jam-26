@@ -204,7 +204,7 @@ FRotator ADice::GetFaceTextRotation(int32 FaceIndex)
 		case 2: return FRotator(0, 0, 90);
 		case 3: return FRotator(0, -90, 0);
 		case 4: return FRotator(0, 90, 0);
-		case 5: return FRotator(0, 0, -90);
+		case 5: return FRotator(0, 180, 90);   // Flipped both ways
 		case 6: return FRotator(-90, 0, 0);
 		default: return FRotator::ZeroRotator;
 	}

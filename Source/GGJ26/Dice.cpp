@@ -34,11 +34,15 @@ ADice::ADice()
 	bHasBeenThrown = false;
 	bIsHighlighted = false;
 	bIsMatched = false;
+	bIsBeingDragged = false;
 	bHasGlow = false;
 	CurrentValue = 0;
 	HighlightPulse = 0.0f;
 	TextColor = FColor::White;
 	MeshNormalizeScale = 1.0f;
+	bHighlightRotSet = false;
+	BaseHighlightRot = FRotator::ZeroRotator;
+	BaseHighlightPos = FVector::ZeroVector;
 
 	SetupFaceTexts();
 }
@@ -58,19 +62,72 @@ void ADice::Tick(float DeltaTime)
 	}
 
 	float BaseScale = DiceSize * MeshNormalizeScale;
+	Mesh->SetWorldScale3D(FVector(BaseScale));
+
+	// Don't apply hover effect to matched or dragged dice
+	if (bIsMatched || bIsBeingDragged)
+	{
+		if (bHighlightRotSet)
+		{
+			bHighlightRotSet = false;
+			HighlightPulse = 0.0f;
+			// Reset scale when exiting highlight
+			Mesh->SetWorldScale3D(FVector(BaseScale));
+		}
+		return;
+	}
+
 	if (bIsHighlighted)
 	{
-		HighlightPulse += DeltaTime * 6.0f;
-		float Scale = BaseScale * (1.0f + FMath::Sin(HighlightPulse) * 0.1f);
-		Mesh->SetWorldScale3D(FVector(Scale));
-	}
-	else if (bIsMatched)
-	{
-		Mesh->SetWorldScale3D(FVector(BaseScale * 0.8f));
+		// Store base position and rotation when first highlighted
+		if (!bHighlightRotSet)
+		{
+			BaseHighlightRot = GetActorRotation();
+			BaseHighlightPos = GetActorLocation();
+			bHighlightRotSet = true;
+			HighlightPulse = 0.0f;
+		}
+
+		HighlightPulse += DeltaTime;
+
+		// Ease-in for smooth rise (first 0.3 seconds)
+		float RiseAlpha = FMath::Min(HighlightPulse / 0.3f, 1.0f);
+		// Smooth ease out cubic
+		float EasedRise = 1.0f - FMath::Pow(1.0f - RiseAlpha, 3.0f);
+
+		// Base float height with smooth ease-in
+		float BaseFloatHeight = 12.0f * EasedRise;
+		// Juicy bob - multiple sine waves for organic feel
+		float BobHeight = FMath::Sin(HighlightPulse * 2.5f) * 4.0f + FMath::Sin(HighlightPulse * 4.0f) * 1.5f;
+
+		FVector FloatPos = BaseHighlightPos;
+		FloatPos.Z += BaseFloatHeight + BobHeight * EasedRise;
+		SetActorLocation(FloatPos);
+
+		// Juicy sway rotation - layered sine waves for organic movement
+		FRotator SwayRot = BaseHighlightRot;
+		float SwayIntensity = EasedRise;  // Ease sway in too
+		SwayRot.Roll += (FMath::Sin(HighlightPulse * 1.8f) * 10.0f + FMath::Sin(HighlightPulse * 3.2f) * 4.0f) * SwayIntensity;
+		SwayRot.Pitch += (FMath::Sin(HighlightPulse * 1.3f) * 7.0f + FMath::Sin(HighlightPulse * 2.7f) * 3.0f) * SwayIntensity;
+		SwayRot.Yaw += FMath::Sin(HighlightPulse * 0.8f) * 5.0f * SwayIntensity;  // Slow yaw drift
+		SetActorRotation(SwayRot);
+
+		// Subtle scale pulse for "breathing" effect
+		float BreathScale = 1.0f + FMath::Sin(HighlightPulse * 2.0f) * 0.03f * EasedRise;
+		Mesh->SetWorldScale3D(FVector(BaseScale * BreathScale));
 	}
 	else
 	{
-		Mesh->SetWorldScale3D(FVector(BaseScale));
+		// Reset position and rotation when not highlighted
+		if (bHighlightRotSet)
+		{
+			SetActorLocation(BaseHighlightPos);
+			SetActorRotation(BaseHighlightRot);
+			bHighlightRotSet = false;
+			HighlightPulse = 0.0f;
+			// Reset scale back to normal
+			Mesh->SetWorldScale3D(FVector(BaseScale));
+		}
 	}
 }
 
@@ -217,6 +274,14 @@ void ADice::SetValue(int32 NewValue)
 
 void ADice::SetHighlighted(bool bHighlight)
 {
+	// Reset position and rotation when unhighlighting
+	if (!bHighlight && bHighlightRotSet)
+	{
+		SetActorLocation(BaseHighlightPos);
+		SetActorRotation(BaseHighlightRot);
+		bHighlightRotSet = false;
+	}
+
 	bIsHighlighted = bHighlight;
 	if (!bHighlight)
 	{

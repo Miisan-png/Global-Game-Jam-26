@@ -5,6 +5,7 @@
 #include "DrawDebugHelpers.h"
 #include "GameFramework/PlayerController.h"
 #include "Components/InputComponent.h"
+#include "Components/TextRenderComponent.h"
 #include "Camera/CameraComponent.h"
 
 ADiceGameManager::ADiceGameManager()
@@ -117,6 +118,16 @@ ADiceGameManager::ADiceGameManager()
 	bRerollAfterSnap = false;
 	RerollDiceIndex = -1;
 	bRerollAll = false;
+	bWaitingForCameraToRerollAll = false;
+	RerollAllWaitTimer = 0.0f;
+	bDiceLiftingForReroll = false;
+	DiceLiftProgress = 0.0f;
+
+	// Match animation
+	bMatchAnimating = false;
+	MatchPlayerIndex = -1;
+	MatchEnemyIndex = -1;
+	MatchAnimProgress = 0.0f;
 
 	// Camera
 	CameraPanProgress = 0.0f;
@@ -124,6 +135,13 @@ ADiceGameManager::ADiceGameManager()
 	bCameraAtMatchView = false;
 	OriginalCameraLocation = FVector::ZeroVector;
 	OriginalCameraRotation = FRotator::ZeroRotator;
+
+	// Modifier shuffle
+	bModifierShuffling = false;
+	ModifierShuffleProgress = 0.0f;
+	FadingModifier = nullptr;
+	FadingModifierAlpha = 1.0f;
+	CurrentRound = 0;
 }
 
 void ADiceGameManager::BeginPlay()
@@ -147,6 +165,7 @@ void ADiceGameManager::SetupInputBindings()
 			InputComponent->BindKey(EKeys::F, IE_Pressed, this, &ADiceGameManager::OnToggleFaceRotationMode);
 			InputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ADiceGameManager::OnMousePressed);
 			InputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ADiceGameManager::OnMouseReleased);
+			InputComponent->BindKey(EKeys::SpaceBar, IE_Pressed, this, &ADiceGameManager::OnGiveUpPressed);
 		}
 		PC->bShowMouseCursor = true;
 		PC->bEnableClickEvents = true;
@@ -210,7 +229,24 @@ void ADiceGameManager::Tick(float DeltaTime)
 			UpdateDiceReturn(DeltaTime);
 			UpdateModifierSnap(DeltaTime);
 			UpdateDiceFlip(DeltaTime);
+			UpdateMatchAnimation(DeltaTime);
 			UpdateCameraPan(DeltaTime);
+			UpdateModifierShuffle(DeltaTime);
+			// Check if waiting for camera to reset before RE:ALL
+			if (bWaitingForCameraToRerollAll)
+			{
+				RerollAllWaitTimer += DeltaTime;
+				if (RerollAllWaitTimer >= 0.6f)  // Wait for camera to start moving
+				{
+					bWaitingForCameraToRerollAll = false;
+					StartDiceLiftForReroll();
+				}
+			}
+			// Animate dice lifting before throw
+			if (bDiceLiftingForReroll)
+			{
+				UpdateDiceLiftForReroll(DeltaTime);
+			}
 			break;
 
 		case EGamePhase::RoundEnd:
@@ -225,17 +261,29 @@ void ADiceGameManager::Tick(float DeltaTime)
 
 void ADiceGameManager::OnStartGamePressed()
 {
-	if (CurrentPhase == EGamePhase::Idle || CurrentPhase == EGamePhase::RoundEnd)
+	if (CurrentPhase == EGamePhase::Idle)
 	{
 		StartGame();
+	}
+	else if (CurrentPhase == EGamePhase::RoundEnd)
+	{
+		// Continue to next round (don't reset everything)
+		CurrentRound++;
+		ContinueToNextRound();
 	}
 	else if (CurrentPhase == EGamePhase::GameOver)
 	{
 		PlayerHealth = MaxHealth;
 		EnemyHealth = MaxHealth;
+		// Reset all modifiers for new game
+		PermanentlyRemovedModifiers.Empty();
 		for (ADiceModifier* Mod : AllModifiers)
 		{
-			if (Mod) Mod->bIsUsed = false;
+			if (Mod)
+			{
+				Mod->bIsUsed = false;
+				Mod->ModifierText->SetVisibility(true);
+			}
 		}
 		StartGame();
 	}
@@ -278,6 +326,18 @@ void ADiceGameManager::OnSelectPrev() {}
 void ADiceGameManager::OnConfirmSelection() {}
 void ADiceGameManager::OnCancelSelection() {}
 
+void ADiceGameManager::OnGiveUpPressed()
+{
+	if (CurrentPhase == EGamePhase::PlayerMatching)
+	{
+		// Only allow if not in the middle of animations
+		if (!bDiceReturning && !bDiceSnappingToModifier && !bDiceFlipping && !bMatchAnimating && !bWaitingForCameraToRerollAll && !bDiceLiftingForReroll && !bIsDragging && !bModifierShuffling)
+		{
+			GiveUpRound();
+		}
+	}
+}
+
 void ADiceGameManager::UpdateDiceDebugVisibility()
 {
 	for (ADice* D : EnemyDice)
@@ -298,9 +358,30 @@ void ADiceGameManager::StartGame()
 	PlayerResults.Empty();
 	PlayerDiceMatched.Empty();
 	EnemyDiceMatched.Empty();
+	PlayerDiceModified.Empty();
+	PlayerDiceAtModifier.Empty();
 	WaitTimer = 0.0f;
 	SelectionMode = 0;
 	SelectedDiceIndex = -1;
+
+	// Reset round counter and permanently removed modifiers for new game
+	CurrentRound = 1;
+	PermanentlyRemovedModifiers.Empty();
+
+	// Reset all modifiers to usable state for new game
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod)
+		{
+			Mod->bIsUsed = false;
+			Mod->SetActive(false);
+			// Make sure it's visible
+			Mod->ModifierText->SetVisibility(true);
+		}
+	}
+
+	// Ensure camera is at original position
+	ResetCamera();
 
 	CurrentPhase = EGamePhase::EnemyThrowing;
 	EnemyThrowDice();
@@ -744,6 +825,8 @@ void ADiceGameManager::LineUpPlayerDice(float DeltaTime)
 			// Go back to matching phase
 			CurrentPhase = EGamePhase::PlayerMatching;
 			ActivateModifiers();
+			// Pan camera back to closeup
+			StartCameraPan();
 		}
 		else
 		{
@@ -782,7 +865,10 @@ void ADiceGameManager::StartMatchingPhase()
 	}
 
 	SelectDice(SelectedDiceIndex);
-	ActivateModifiers();
+
+	// Start juicy modifier shuffle animation (will activate when done)
+	StartModifierShuffle();
+
 	StartCameraPan();
 }
 
@@ -809,15 +895,82 @@ void ADiceGameManager::TryMatchDice(int32 PlayerIndex, int32 EnemyIndex)
 
 	if (PlayerVal == EnemyVal)
 	{
-		PlayerDiceMatched[PlayerIndex] = true;
-		EnemyDiceMatched[EnemyIndex] = true;
+		// Start Balatro-style match animation
+		StartMatchAnimation(PlayerIndex, EnemyIndex);
+	}
+}
 
-		PlayerDice[PlayerIndex]->SetMatched(true);
-		EnemyDice[EnemyIndex]->SetMatched(true);
+void ADiceGameManager::StartMatchAnimation(int32 PlayerIdx, int32 EnemyIdx)
+{
+	if (!PlayerDice.IsValidIndex(PlayerIdx) || !EnemyDice.IsValidIndex(EnemyIdx)) return;
 
-		// Play match effect
-		FVector MatchPos = (PlayerDice[PlayerIndex]->GetActorLocation() + EnemyDice[EnemyIndex]->GetActorLocation()) / 2.0f;
-		PlayMatchEffect(MatchPos);
+	bMatchAnimating = true;
+	MatchPlayerIndex = PlayerIdx;
+	MatchEnemyIndex = EnemyIdx;
+	MatchAnimProgress = 0.0f;
+
+	MatchStartPos = PlayerDice[PlayerIdx]->GetActorLocation();
+	// Target is next to enemy dice
+	MatchTargetPos = EnemyDice[EnemyIdx]->GetActorLocation();
+	MatchTargetPos.Z = MatchStartPos.Z;  // Same height
+}
+
+void ADiceGameManager::UpdateMatchAnimation(float DeltaTime)
+{
+	if (!bMatchAnimating) return;
+
+	if (!PlayerDice.IsValidIndex(MatchPlayerIndex) || !EnemyDice.IsValidIndex(MatchEnemyIndex))
+	{
+		bMatchAnimating = false;
+		return;
+	}
+
+	ADice* PlayerD = PlayerDice[MatchPlayerIndex];
+	ADice* EnemyD = EnemyDice[MatchEnemyIndex];
+	if (!PlayerD || !EnemyD)
+	{
+		bMatchAnimating = false;
+		return;
+	}
+
+	MatchAnimProgress += DeltaTime * 4.0f;
+	float Alpha = FMath::Clamp(MatchAnimProgress, 0.0f, 1.0f);
+
+	// Juicy ease
+	float SmoothAlpha = EaseOutCubic(Alpha);
+
+	// Player dice flies to enemy dice with arc
+	FVector NewPos = FMath::Lerp(MatchStartPos, MatchTargetPos, SmoothAlpha);
+	float ArcHeight = FMath::Sin(Alpha * PI) * 20.0f;
+	NewPos.Z += ArcHeight;
+	PlayerD->SetActorLocation(NewPos);
+
+	// Scale pop effect on both dice
+	float ScalePop = 1.0f + FMath::Sin(Alpha * PI) * 0.2f;
+	PlayerD->Mesh->SetWorldScale3D(FVector(PlayerD->DiceSize * PlayerD->MeshNormalizeScale * ScalePop));
+	EnemyD->Mesh->SetWorldScale3D(FVector(EnemyD->DiceSize * EnemyD->MeshNormalizeScale * ScalePop));
+
+	if (MatchAnimProgress >= 1.0f)
+	{
+		// Animation complete - finalize match
+		PlayerDiceMatched[MatchPlayerIndex] = true;
+		EnemyDiceMatched[MatchEnemyIndex] = true;
+
+		PlayerD->SetMatched(true);
+		EnemyD->SetMatched(true);
+
+		// Stack them together
+		FVector FinalPos = EnemyD->GetActorLocation();
+		FinalPos.Z += 8.0f;  // Stack on top
+		PlayerD->SetActorLocation(FinalPos);
+
+		// Reset scales
+		PlayerD->Mesh->SetWorldScale3D(FVector(PlayerD->DiceSize * PlayerD->MeshNormalizeScale));
+		EnemyD->Mesh->SetWorldScale3D(FVector(EnemyD->DiceSize * EnemyD->MeshNormalizeScale));
+
+		bMatchAnimating = false;
+		MatchPlayerIndex = -1;
+		MatchEnemyIndex = -1;
 
 		CheckAllMatched();
 	}
@@ -863,15 +1016,14 @@ void ADiceGameManager::TryApplyModifier(ADiceModifier* Modifier, int32 DiceIndex
 		return;
 	}
 
-	// Handle RE:ALL - reset camera and throw all
+	// Handle RE:ALL - reset camera first, then throw all
 	if (Modifier->ModifierType == EModifierType::RerollAll)
 	{
-		bRerollAfterSnap = true;
-		bRerollAll = true;
-		RerollDiceIndex = -1;
-		// Reset camera first, then throw
+		// Start camera reset, wait, then throw
+		bWaitingForCameraToRerollAll = true;
+		RerollAllWaitTimer = 0.0f;
+		DeactivateModifiers();
 		ResetCamera();
-		RerollAllUnmatchedDice();
 		Modifier->UseModifier();
 		return;
 	}
@@ -1062,22 +1214,36 @@ void ADiceGameManager::RerollSingleDice(int32 DiceIndex)
 	ADice* Dice = PlayerDice[DiceIndex];
 	if (!Dice) return;
 
+	// Store modifier position for throw direction
+	FVector ModPos = Dice->GetActorLocation();
+
 	// Clear modified state so it returns to lineup
 	PlayerDiceModified[DiceIndex] = false;
 	PlayerDiceAtModifier[DiceIndex] = nullptr;
 
-	// Re-enable physics and throw upward from current position
+	// Add random rotation for drama
+	Dice->SetActorRotation(FRotator(
+		FMath::RandRange(0.0f, 360.0f),
+		FMath::RandRange(0.0f, 360.0f),
+		FMath::RandRange(0.0f, 360.0f)
+	));
+
+	// Re-enable physics
 	Dice->Mesh->SetSimulatePhysics(true);
 	Dice->bHasBeenThrown = false;
 
-	// Throw upward with slight random direction
-	FVector ThrowDir = FVector(
-		FMath::RandRange(-0.2f, 0.2f),
-		FMath::RandRange(-0.2f, 0.2f),
-		1.0f
-	).GetSafeNormal();
+	// Throw upward and toward lineup center with spin
+	FVector ThrowTarget = GetLineupWorldCenter();
+	FVector ThrowDir = (ThrowTarget - ModPos).GetSafeNormal();
+	ThrowDir.Z = 0.8f;  // Mostly upward
+	ThrowDir.Normalize();
+	ThrowDir += FVector(
+		FMath::RandRange(-0.15f, 0.15f),
+		FMath::RandRange(-0.15f, 0.15f),
+		0
+	);
 
-	Dice->Throw(ThrowDir, DiceThrowForce * 0.5f);
+	Dice->Throw(ThrowDir, DiceThrowForce * 0.6f);
 
 	// Mark that we need to wait for this dice to settle
 	bPlayerDiceSettled = false;
@@ -1087,37 +1253,120 @@ void ADiceGameManager::RerollSingleDice(int32 DiceIndex)
 	CurrentPhase = EGamePhase::PlayerDiceSettling;
 }
 
-void ADiceGameManager::RerollAllUnmatchedDice()
+void ADiceGameManager::StartDiceLiftForReroll()
 {
-	bool bAnyRerolled = false;
+	RerollStartPositions.Empty();
+	RerollLiftPositions.Empty();
 
-	// Reset camera for the big throw
-	DeactivateModifiers();
-
+	// Calculate lift positions for all unmatched dice
 	for (int32 i = 0; i < PlayerDice.Num(); i++)
 	{
-		// Skip matched dice only - modified dice get rerolled too!
+		if (PlayerDiceMatched[i])
+		{
+			RerollStartPositions.Add(FVector::ZeroVector);
+			RerollLiftPositions.Add(FVector::ZeroVector);
+			continue;
+		}
+
+		ADice* Dice = PlayerDice[i];
+		if (!Dice)
+		{
+			RerollStartPositions.Add(FVector::ZeroVector);
+			RerollLiftPositions.Add(FVector::ZeroVector);
+			continue;
+		}
+
+		FVector StartPos = Dice->GetActorLocation();
+		RerollStartPositions.Add(StartPos);
+
+		// Lift position - up and slightly back
+		FVector LiftPos = StartPos;
+		LiftPos.Z += 100.0f;  // Go up high
+		LiftPos += FVector(FMath::RandRange(-30.0f, 30.0f), FMath::RandRange(-30.0f, 30.0f), 0);
+		RerollLiftPositions.Add(LiftPos);
+
+		// Clear modified state
+		PlayerDiceModified[i] = false;
+		PlayerDiceAtModifier[i] = nullptr;
+	}
+
+	bDiceLiftingForReroll = true;
+	DiceLiftProgress = 0.0f;
+}
+
+void ADiceGameManager::UpdateDiceLiftForReroll(float DeltaTime)
+{
+	DiceLiftProgress += DeltaTime * 2.0f;  // Smooth lift speed
+	float Alpha = FMath::Clamp(DiceLiftProgress, 0.0f, 1.0f);
+	float SmoothAlpha = EaseOutCubic(Alpha);
+
+	// Animate all unmatched dice lifting
+	for (int32 i = 0; i < PlayerDice.Num(); i++)
+	{
 		if (PlayerDiceMatched[i]) continue;
 
 		ADice* Dice = PlayerDice[i];
 		if (!Dice) continue;
 
-		// Clear modified state
-		PlayerDiceModified[i] = false;
-		PlayerDiceAtModifier[i] = nullptr;
+		if (RerollStartPositions.IsValidIndex(i) && RerollLiftPositions.IsValidIndex(i))
+		{
+			FVector NewPos = FMath::Lerp(RerollStartPositions[i], RerollLiftPositions[i], SmoothAlpha);
+			Dice->SetActorLocation(NewPos);
 
-		// Re-enable physics and throw
+			// Add some rotation during lift
+			FRotator CurrentRot = Dice->GetActorRotation();
+			CurrentRot.Yaw += DeltaTime * 90.0f;
+			CurrentRot.Pitch += DeltaTime * 60.0f;
+			Dice->SetActorRotation(CurrentRot);
+		}
+	}
+
+	// When lift is done, throw them down
+	if (DiceLiftProgress >= 1.0f)
+	{
+		bDiceLiftingForReroll = false;
+		RerollAllUnmatchedDice();
+	}
+}
+
+void ADiceGameManager::RerollAllUnmatchedDice()
+{
+	bool bAnyRerolled = false;
+
+	// Get lineup center for throwing toward
+	FVector ThrowTarget = GetLineupWorldCenter();
+
+	// Throw from current (lifted) positions
+	for (int32 i = 0; i < PlayerDice.Num(); i++)
+	{
+		// Skip matched dice
+		if (PlayerDiceMatched[i]) continue;
+
+		ADice* Dice = PlayerDice[i];
+		if (!Dice) continue;
+
+		FVector SpawnPos = Dice->GetActorLocation();
+
+		// Random rotation for drama
+		Dice->SetActorRotation(FRotator(
+			FMath::RandRange(0.0f, 360.0f),
+			FMath::RandRange(0.0f, 360.0f),
+			FMath::RandRange(0.0f, 360.0f)
+		));
+
+		// Re-enable physics
 		Dice->Mesh->SetSimulatePhysics(true);
 		Dice->bHasBeenThrown = false;
 
-		// Throw upward with random spread - gambling style!
-		FVector ThrowDir = FVector(
-			FMath::RandRange(-0.4f, 0.4f),
-			FMath::RandRange(-0.4f, 0.4f),
-			1.0f
-		).GetSafeNormal();
+		// Throw DOWNWARD toward table - like initial throw
+		FVector ThrowDir = (ThrowTarget - SpawnPos).GetSafeNormal();
+		ThrowDir += FVector(
+			FMath::RandRange(-0.15f, 0.15f),
+			FMath::RandRange(-0.15f, 0.15f),
+			FMath::RandRange(-0.1f, 0.0f)
+		);
 
-		Dice->Throw(ThrowDir, DiceThrowForce * 0.7f);
+		Dice->Throw(ThrowDir, DiceThrowForce);
 		bAnyRerolled = true;
 	}
 
@@ -1220,8 +1469,26 @@ void ADiceGameManager::DrawTurnText()
 			Color = FColor::Cyan;
 			break;
 		case EGamePhase::PlayerMatching:
-			Text = bIsDragging ? "Drop on matching dice!" : "Drag your dice!";
-			Color = FColor::Yellow;
+			if (bModifierShuffling)
+			{
+				Text = "Modifiers shuffling...";
+				Color = FColor::Cyan;
+			}
+			else if (bIsDragging)
+			{
+				Text = "Drop on matching dice!";
+				Color = FColor::Yellow;
+			}
+			else if (!CanStillMatch())
+			{
+				Text = "NO MATCHES! Press SPACE to take damage";
+				Color = FColor::Red;
+			}
+			else
+			{
+				Text = "Drag your dice! (SPACE to give up)";
+				Color = FColor::Yellow;
+			}
 			break;
 		case EGamePhase::RoundEnd:
 			Text = "Round Won! Press G";
@@ -1273,7 +1540,7 @@ void ADiceGameManager::DrawTurnText()
 
 void ADiceGameManager::DrawHealthBars()
 {
-	FString HealthText = FString::Printf(TEXT("Enemy HP: %d/%d | Your HP: %d/%d"), EnemyHealth, MaxHealth, PlayerHealth, MaxHealth);
+	FString HealthText = FString::Printf(TEXT("Round %d | Enemy HP: %d/%d | Your HP: %d/%d"), CurrentRound, EnemyHealth, MaxHealth, PlayerHealth, MaxHealth);
 	GEngine->AddOnScreenDebugMessage(4, 0.0f, FColor::White, HealthText, true, FVector2D(1.5f, 1.5f));
 }
 
@@ -1306,7 +1573,7 @@ ADiceCamera* ADiceGameManager::FindCamera()
 void ADiceGameManager::OnMousePressed()
 {
 	if (CurrentPhase != EGamePhase::PlayerMatching) return;
-	if (bDiceReturning || bDiceSnappingToModifier || bDiceFlipping) return;
+	if (bDiceReturning || bDiceSnappingToModifier || bDiceFlipping || bMatchAnimating || bWaitingForCameraToRerollAll || bDiceLiftingForReroll || bModifierShuffling) return;
 
 	FVector HitLocation;
 	AActor* HitActor = GetActorUnderMouse(HitLocation);
@@ -1335,10 +1602,33 @@ void ADiceGameManager::OnMouseReleased()
 	bool bSuccess = false;
 	bool bAppliedModifier = false;
 
-	// Check distance to modifiers first (more reliable than raycast)
-	if (!PlayerDiceModified[DraggedDiceIndex])
+	// Check enemy dice FIRST for matching (priority over modifiers)
+	float ClosestEnemyDist = 60.0f;
+	int32 ClosestEnemy = -1;
+
+	for (int32 i = 0; i < EnemyDice.Num(); i++)
 	{
-		float ClosestDist = 70.0f;  // Detection radius - generous for easy drops
+		if (EnemyDice[i] && !EnemyDiceMatched[i])
+		{
+			float Dist = FVector::Dist(DicePos, EnemyDice[i]->GetActorLocation());
+			if (Dist < ClosestEnemyDist)
+			{
+				ClosestEnemyDist = Dist;
+				ClosestEnemy = i;
+			}
+		}
+	}
+
+	if (ClosestEnemy >= 0)
+	{
+		TryMatchDice(DraggedDiceIndex, ClosestEnemy);
+		bSuccess = PlayerDiceMatched[DraggedDiceIndex] || bMatchAnimating;
+	}
+
+	// Check modifiers only if not matching enemy dice
+	if (!bSuccess && !PlayerDiceModified[DraggedDiceIndex])
+	{
+		float ClosestModDist = 70.0f;
 		ADiceModifier* ClosestMod = nullptr;
 
 		for (ADiceModifier* Mod : AllModifiers)
@@ -1346,9 +1636,9 @@ void ADiceGameManager::OnMouseReleased()
 			if (Mod && !Mod->bIsUsed && Mod->bIsActive)
 			{
 				float Dist = FVector::Dist2D(DicePos, Mod->GetActorLocation());
-				if (Dist < ClosestDist)
+				if (Dist < ClosestModDist)
 				{
-					ClosestDist = Dist;
+					ClosestModDist = Dist;
 					ClosestMod = Mod;
 				}
 			}
@@ -1362,37 +1652,12 @@ void ADiceGameManager::OnMouseReleased()
 		}
 	}
 
-	// Check distance to enemy dice for matching
-	if (!bAppliedModifier)
-	{
-		float ClosestDist = 60.0f;  // Match radius - generous
-		int32 ClosestEnemy = -1;
-
-		for (int32 i = 0; i < EnemyDice.Num(); i++)
-		{
-			if (EnemyDice[i] && !EnemyDiceMatched[i])
-			{
-				float Dist = FVector::Dist(DicePos, EnemyDice[i]->GetActorLocation());
-				if (Dist < ClosestDist)
-				{
-					ClosestDist = Dist;
-					ClosestEnemy = i;
-				}
-			}
-		}
-
-		if (ClosestEnemy >= 0)
-		{
-			TryMatchDice(DraggedDiceIndex, ClosestEnemy);
-			bSuccess = PlayerDiceMatched[DraggedDiceIndex];
-		}
-	}
-
 	// Handle result
 	if (bAppliedModifier)
 	{
 		// Modifier handles the snap animation
 		DraggedDice->SetHighlighted(false);
+		DraggedDice->bIsBeingDragged = false;
 		ClearAllHighlights();
 		bIsDragging = false;
 		DraggedDice = nullptr;
@@ -1417,7 +1682,7 @@ void ADiceGameManager::UpdateMouseInput()
 		UpdateDragging();
 		HighlightValidTargets();
 	}
-	else if (!bDiceReturning && !bDiceSnappingToModifier && !bDiceFlipping)
+	else if (!bDiceReturning && !bDiceSnappingToModifier && !bDiceFlipping && !bMatchAnimating && !bDiceLiftingForReroll && !bModifierShuffling)
 	{
 		FVector HitLocation;
 		AActor* HitActor = GetActorUnderMouse(HitLocation);
@@ -1496,21 +1761,32 @@ void ADiceGameManager::StartDragging(ADice* Dice, int32 Index)
 	DraggedDice = Dice;
 	DraggedDiceIndex = Index;
 
-	// If dice is at a modifier, return position is at the modifier
-	if (PlayerDiceModified.IsValidIndex(Index) && PlayerDiceModified[Index] && PlayerDiceAtModifier[Index])
+	// Get the base position/rotation (before hover) if available
+	if (Dice->bHighlightRotSet)
 	{
+		OriginalDragPosition = Dice->BaseHighlightPos;
+		OriginalDragRotation = Dice->BaseHighlightRot;
+		Dice->SetActorLocation(Dice->BaseHighlightPos);
+		Dice->SetActorRotation(Dice->BaseHighlightRot);
+	}
+	else if (PlayerDiceModified.IsValidIndex(Index) && PlayerDiceModified[Index] && PlayerDiceAtModifier[Index])
+	{
+		// If dice is at a modifier, return position is at the modifier
 		OriginalDragPosition = PlayerDiceAtModifier[Index]->GetActorLocation() + FVector(0, 0, 20.0f);
+		OriginalDragRotation = Dice->GetActorRotation();
 	}
 	else
 	{
 		OriginalDragPosition = Dice->GetActorLocation();
+		OriginalDragRotation = Dice->GetActorRotation();
 	}
 
-	// Store actual current rotation - don't recalculate to avoid flipping
-	OriginalDragRotation = Dice->GetActorRotation();
+	// Mark as being dragged (stops hover in Tick)
+	Dice->bIsBeingDragged = true;
+	Dice->bHighlightRotSet = false;
+	Dice->SetHighlighted(false);
 
 	LastDragPosition = Dice->GetActorLocation();
-	Dice->SetHighlighted(true);
 }
 
 void ADiceGameManager::PhysicsBounceBack()
@@ -1522,6 +1798,7 @@ void ADiceGameManager::PhysicsBounceBack()
 	}
 
 	DraggedDice->SetHighlighted(false);
+	DraggedDice->bIsBeingDragged = false;
 	ClearAllHighlights();
 
 	// Enable physics for juicy bounce
@@ -1571,6 +1848,7 @@ void ADiceGameManager::StopDragging(bool bSuccess)
 	}
 
 	DraggedDice->SetHighlighted(false);
+	DraggedDice->bIsBeingDragged = false;
 	ClearAllHighlights();
 
 	if (bSuccess)
@@ -1730,17 +2008,7 @@ void ADiceGameManager::ClearAllHighlights()
 
 void ADiceGameManager::PlayMatchEffect(FVector Location)
 {
-	// Debug effect - replace with particles later
-	for (int32 i = 0; i < 12; i++)
-	{
-		FVector Offset = FVector(
-			FMath::RandRange(-25.0f, 25.0f),
-			FMath::RandRange(-25.0f, 25.0f),
-			FMath::RandRange(0.0f, 40.0f)
-		);
-		DrawDebugPoint(GetWorld(), Location + Offset, 8.0f, FColor::Green, false, 0.4f);
-	}
-	DrawDebugSphere(GetWorld(), Location, 20.0f, 8, FColor::Yellow, false, 0.3f);
+	// Particles handled elsewhere - this is just a hook for future VFX
 }
 
 // ==================== MODIFIERS ====================
@@ -1749,7 +2017,8 @@ void ADiceGameManager::ActivateModifiers()
 {
 	for (ADiceModifier* Mod : AllModifiers)
 	{
-		if (Mod && !Mod->bIsUsed)
+		// Skip permanently removed modifiers
+		if (Mod && !Mod->bIsUsed && !PermanentlyRemovedModifiers.Contains(Mod))
 		{
 			Mod->SetActive(true);
 		}
@@ -2060,6 +2329,288 @@ void ADiceGameManager::UpdateTestDice()
 	Rot.Yaw += LineupYaw;
 	TestDice->SetActorRotation(Rot);
 	TestDice->SetActorLocation(GetLineupWorldCenter() + FVector(0, 0, 50.0f));
+}
+
+// ==================== MATCH DETECTION ====================
+
+bool ADiceGameManager::CanStillMatch()
+{
+	// Get available (unused, active) modifiers that could help
+	TArray<ADiceModifier*> AvailableModifiers;
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod && !Mod->bIsUsed && Mod->bIsActive)
+		{
+			AvailableModifiers.Add(Mod);
+		}
+	}
+
+	// Check each unmatched player dice
+	for (int32 p = 0; p < PlayerDice.Num(); p++)
+	{
+		if (PlayerDiceMatched[p]) continue;  // Already matched
+
+		int32 PlayerVal = PlayerResults[p];
+		bool bCanUseModifiers = !PlayerDiceModified[p];  // Can only use modifier if not already modified
+
+		// Check for direct match with any unmatched enemy dice
+		for (int32 e = 0; e < EnemyDice.Num(); e++)
+		{
+			if (EnemyDiceMatched[e]) continue;
+			if (EnemyResults[e] == PlayerVal)
+			{
+				return true;  // Direct match possible
+			}
+		}
+
+		// If dice can use modifiers, check if any modifier could create a match
+		if (bCanUseModifiers)
+		{
+			for (ADiceModifier* Mod : AvailableModifiers)
+			{
+				// Skip RerollOne and RerollAll for now - they're wildcards (always could potentially help)
+				if (Mod->ModifierType == EModifierType::RerollOne || Mod->ModifierType == EModifierType::RerollAll)
+				{
+					return true;  // Reroll exists = could potentially match
+				}
+
+				int32 ModifiedVal = Mod->ApplyToValue(PlayerVal);
+				if (ModifiedVal == PlayerVal) continue;  // No effect
+
+				// Check if modified value matches any enemy
+				for (int32 e = 0; e < EnemyDice.Num(); e++)
+				{
+					if (EnemyDiceMatched[e]) continue;
+					if (EnemyResults[e] == ModifiedVal)
+					{
+						return true;  // Match possible with modifier
+					}
+				}
+			}
+		}
+	}
+
+	return false;  // No possible matches
+}
+
+void ADiceGameManager::GiveUpRound()
+{
+	// Player takes 1 damage
+	DealDamage(false);
+
+	// Deactivate modifiers and reset camera
+	DeactivateModifiers();
+	ResetCamera();
+
+	// Check for game over
+	if (PlayerHealth <= 0)
+	{
+		CurrentPhase = EGamePhase::GameOver;
+		return;
+	}
+
+	// Increment round counter
+	CurrentRound++;
+
+	// Start new round - clear all dice and restart
+	ClearAllDice();
+
+	EnemyResults.Empty();
+	PlayerResults.Empty();
+	PlayerDiceMatched.Empty();
+	EnemyDiceMatched.Empty();
+	PlayerDiceModified.Empty();
+	PlayerDiceAtModifier.Empty();
+	WaitTimer = 0.0f;
+	SelectionMode = 0;
+	SelectedDiceIndex = -1;
+
+	// Enemy throws new dice
+	CurrentPhase = EGamePhase::EnemyThrowing;
+	EnemyThrowDice();
+}
+
+void ADiceGameManager::ContinueToNextRound()
+{
+	// Clear dice but keep permanent modifier state
+	ClearAllDice();
+
+	EnemyResults.Empty();
+	PlayerResults.Empty();
+	PlayerDiceMatched.Empty();
+	EnemyDiceMatched.Empty();
+	PlayerDiceModified.Empty();
+	PlayerDiceAtModifier.Empty();
+	WaitTimer = 0.0f;
+	SelectionMode = 0;
+	SelectedDiceIndex = -1;
+
+	// Reset camera to original position
+	ResetCamera();
+
+	// Enemy throws new dice
+	CurrentPhase = EGamePhase::EnemyThrowing;
+	EnemyThrowDice();
+}
+
+void ADiceGameManager::ResetModifiersForNewRound()
+{
+	// Reset all non-permanently-removed modifiers to usable state
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod && !PermanentlyRemovedModifiers.Contains(Mod))
+		{
+			Mod->bIsUsed = false;
+		}
+	}
+}
+
+void ADiceGameManager::StartModifierShuffle()
+{
+	// Get list of available (non-permanently-removed) modifiers
+	TArray<ADiceModifier*> AvailableModifiers;
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod && !PermanentlyRemovedModifiers.Contains(Mod))
+		{
+			AvailableModifiers.Add(Mod);
+		}
+	}
+
+	// If no modifiers left, skip shuffle
+	if (AvailableModifiers.Num() == 0)
+	{
+		bModifierShuffling = false;
+		ActivateModifiers();
+		return;
+	}
+
+	// Reset all available modifiers to usable
+	ResetModifiersForNewRound();
+
+	// Pick a random modifier to permanently remove (if this isn't round 1)
+	if (CurrentRound > 1 && AvailableModifiers.Num() > 0)
+	{
+		int32 RemoveIndex = FMath::RandRange(0, AvailableModifiers.Num() - 1);
+		FadingModifier = AvailableModifiers[RemoveIndex];
+		PermanentlyRemovedModifiers.Add(FadingModifier);
+		AvailableModifiers.RemoveAt(RemoveIndex);
+	}
+	else
+	{
+		FadingModifier = nullptr;
+	}
+
+	// Store current positions and calculate target positions (shuffle!)
+	ModifierStartPositions.Empty();
+	ModifierTargetPositions.Empty();
+
+	// Get all current positions
+	TArray<FVector> AllPositions;
+	for (ADiceModifier* Mod : AvailableModifiers)
+	{
+		AllPositions.Add(Mod->GetActorLocation());
+	}
+
+	// Shuffle positions for juicy effect
+	for (int32 i = AllPositions.Num() - 1; i > 0; i--)
+	{
+		int32 j = FMath::RandRange(0, i);
+		AllPositions.Swap(i, j);
+	}
+
+	// Assign shuffled positions
+	for (int32 i = 0; i < AvailableModifiers.Num(); i++)
+	{
+		ModifierStartPositions.Add(AvailableModifiers[i]->GetActorLocation());
+		ModifierTargetPositions.Add(AllPositions[i]);
+	}
+
+	bModifierShuffling = true;
+	ModifierShuffleProgress = 0.0f;
+	FadingModifierAlpha = 1.0f;
+}
+
+void ADiceGameManager::UpdateModifierShuffle(float DeltaTime)
+{
+	if (!bModifierShuffling) return;
+
+	ModifierShuffleProgress += DeltaTime * 1.5f;  // Speed of shuffle
+	float Alpha = FMath::Clamp(ModifierShuffleProgress, 0.0f, 1.0f);
+
+	// Juicy ease
+	float SmoothAlpha = EaseOutElastic(Alpha);
+	float LinearAlpha = EaseOutCubic(Alpha);
+
+	// Get available modifiers (same order as positions)
+	TArray<ADiceModifier*> AvailableModifiers;
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod && !PermanentlyRemovedModifiers.Contains(Mod))
+		{
+			AvailableModifiers.Add(Mod);
+		}
+	}
+
+	// Animate modifiers to new positions
+	for (int32 i = 0; i < AvailableModifiers.Num(); i++)
+	{
+		if (ModifierStartPositions.IsValidIndex(i) && ModifierTargetPositions.IsValidIndex(i))
+		{
+			ADiceModifier* Mod = AvailableModifiers[i];
+			if (Mod)
+			{
+				// Arc movement - rise up then down
+				FVector NewPos = FMath::Lerp(ModifierStartPositions[i], ModifierTargetPositions[i], LinearAlpha);
+				float ArcHeight = FMath::Sin(LinearAlpha * PI) * 30.0f;
+				NewPos.Z += ArcHeight;
+				Mod->SetActorLocation(NewPos);
+			}
+		}
+	}
+
+	// Fade out the removed modifier
+	if (FadingModifier)
+	{
+		FadingModifierAlpha = 1.0f - LinearAlpha;
+
+		// Scale down and fade
+		float FadeScale = FMath::Max(0.1f, FadingModifierAlpha);
+		FadingModifier->ModifierText->SetWorldScale3D(FVector(FadeScale));
+
+		// Shrink and rise
+		FVector FadePos = FadingModifier->GetActorLocation();
+		FadePos.Z += DeltaTime * 50.0f * (1.0f - FadingModifierAlpha);  // Rise as fading
+		FadingModifier->SetActorLocation(FadePos);
+
+		// Fade color
+		uint8 FadeAlpha = FMath::Clamp(int32(FadingModifierAlpha * 255), 0, 255);
+		FadingModifier->ModifierText->SetTextRenderColor(FColor(255, 100, 100, FadeAlpha));
+	}
+
+	// When shuffle is done
+	if (ModifierShuffleProgress >= 1.0f)
+	{
+		// Finalize positions
+		for (int32 i = 0; i < AvailableModifiers.Num(); i++)
+		{
+			if (ModifierTargetPositions.IsValidIndex(i))
+			{
+				AvailableModifiers[i]->SetActorLocation(ModifierTargetPositions[i]);
+			}
+		}
+
+		// Hide the faded modifier completely
+		if (FadingModifier)
+		{
+			FadingModifier->ModifierText->SetVisibility(false);
+			FadingModifier->SetActive(false);
+			FadingModifier = nullptr;
+		}
+
+		bModifierShuffling = false;
+		ActivateModifiers();
+	}
 }
 
 void ADiceGameManager::UpdateFaceRotationMode()

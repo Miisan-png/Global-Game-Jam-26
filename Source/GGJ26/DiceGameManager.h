@@ -186,6 +186,7 @@ private:
 	void OnSelectPrev();
 	void OnConfirmSelection();
 	void OnCancelSelection();
+	void OnGiveUpPressed();
 	void UpdateDiceDebugVisibility();
 
 	void EnemyThrowDice();
@@ -205,11 +206,16 @@ private:
 	void UpdateSelectionHighlights();
 	void RerollSingleDice(int32 DiceIndex);
 	void RerollAllUnmatchedDice();
+	void StartDiceLiftForReroll();
+	void UpdateDiceLiftForReroll(float DeltaTime);
 	void UpdateDiceFaceDisplay(ADice* Dice, int32 NewValue);
 	void SnapDiceToModifier(int32 DiceIndex, ADiceModifier* Modifier);
 	void CheckAllMatched();
 	void DealDamage(bool bToEnemy);
 	void CheckGameOver();
+	bool CanStillMatch();
+	void GiveUpRound();
+	void ContinueToNextRound();
 
 	void FindAllModifiers();
 	void ClearAllDice();
@@ -284,6 +290,12 @@ private:
 	bool bRerollAfterSnap;
 	int32 RerollDiceIndex;
 	bool bRerollAll;
+	bool bWaitingForCameraToRerollAll;
+	float RerollAllWaitTimer;
+	bool bDiceLiftingForReroll;
+	float DiceLiftProgress;
+	TArray<FVector> RerollStartPositions;
+	TArray<FVector> RerollLiftPositions;
 
 	void OnMousePressed();
 	void OnMouseReleased();
@@ -298,12 +310,25 @@ private:
 	void UpdateModifierSnap(float DeltaTime);
 	void UpdateDiceFlip(float DeltaTime);
 	void StartDiceFlip(int32 DiceIndex, int32 NewValue);
+	void UpdateMatchAnimation(float DeltaTime);
+	void StartMatchAnimation(int32 PlayerIdx, int32 EnemyIdx);
 	void HighlightValidTargets();
 	void ClearAllHighlights();
 	void PlayMatchEffect(FVector Location);
 
+	// Match animation (Balatro style)
+	bool bMatchAnimating;
+	int32 MatchPlayerIndex;
+	int32 MatchEnemyIndex;
+	float MatchAnimProgress;
+	FVector MatchStartPos;
+	FVector MatchTargetPos;
+
 	void ActivateModifiers();
 	void DeactivateModifiers();
+	void ResetModifiersForNewRound();
+	void StartModifierShuffle();
+	void UpdateModifierShuffle(float DeltaTime);
 
 	void StartCameraPan();
 	void UpdateCameraPan(float DeltaTime);
@@ -329,4 +354,14 @@ private:
 	float CameraPanProgress;
 	bool bCameraPanning;
 	bool bCameraAtMatchView;
+
+	// Modifier shuffle/fade animation
+	TArray<ADiceModifier*> PermanentlyRemovedModifiers;
+	bool bModifierShuffling;
+	float ModifierShuffleProgress;
+	ADiceModifier* FadingModifier;
+	TArray<FVector> ModifierStartPositions;
+	TArray<FVector> ModifierTargetPositions;
+	float FadingModifierAlpha;
+	int32 CurrentRound;
 };

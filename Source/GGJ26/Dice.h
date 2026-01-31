@@ -93,6 +93,9 @@ public:
 	// Allow external reset for re-throwing
 	bool bHasBeenThrown;
 
+	// Sound tracking - reset when thrown, set when landed
+	bool bHasPlayedLandSound;
+
 	// Highlight sway
 	FRotator BaseHighlightRot;
 	FVector BaseHighlightPos;

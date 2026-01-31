@@ -2,6 +2,8 @@
 #include "MaskEnemy.h"
 #include "DiceCamera.h"
 #include "PlayerHandComponent.h"
+#include "RoundTimerComponent.h"
+#include "SoundManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/PlayerController.h"
@@ -73,6 +75,7 @@ ADiceGameManager::ADiceGameManager()
 	SelectionMode = 0;
 	HoveredEnemyIndex = -1;
 	HoveredModifierIndex = -1;
+	LastHoveredDice = nullptr;
 
 	// Adjust mode - disabled by default
 	bAdjustMode = false;
@@ -155,6 +158,13 @@ ADiceGameManager::ADiceGameManager()
 	// Dice disperse
 	bDiceDispersing = false;
 	DiceDisperseProgress = 0.0f;
+
+	// Round timer
+	RoundTimerActor = nullptr;
+	CachedRoundTimer = nullptr;
+
+	// Sound
+	SoundManager = nullptr;
 }
 
 void ADiceGameManager::BeginPlay()
@@ -181,6 +191,13 @@ void ADiceGameManager::BeginPlay()
 	if (EnemyHand)
 	{
 		EnemyHand->OnChopComplete.AddDynamic(this, &ADiceGameManager::OnEnemyChopComplete);
+	}
+
+	// Bind to round timer expired event
+	URoundTimerComponent* Timer = GetRoundTimer();
+	if (Timer)
+	{
+		Timer->OnTimerExpired.AddDynamic(this, &ADiceGameManager::OnRoundTimerExpired);
 	}
 }
 
@@ -466,6 +483,13 @@ void ADiceGameManager::StartGame()
 
 void ADiceGameManager::EnemyThrowDice()
 {
+	// Set timer to DEALING state
+	URoundTimerComponent* Timer = GetRoundTimer();
+	if (Timer)
+	{
+		Timer->SetDealing();
+	}
+
 	AMaskEnemy* Enemy = FindEnemy();
 	if (!Enemy) return;
 
@@ -535,10 +559,24 @@ void ADiceGameManager::CheckEnemyDiceSettled(float DeltaTime)
 	bool AllSettled = true;
 	for (ADice* D : EnemyDice)
 	{
-		if (D && !D->IsStill())
+		if (D)
 		{
-			AllSettled = false;
-			break;
+			if (D->IsStill())
+			{
+				// Play sound for this dice if it just landed
+				if (!D->bHasPlayedLandSound)
+				{
+					D->bHasPlayedLandSound = true;
+					if (SoundManager)
+					{
+						SoundManager->PlayDiceRollAtLocation(D->GetActorLocation());
+					}
+				}
+			}
+			else
+			{
+				AllSettled = false;
+			}
 		}
 	}
 
@@ -664,6 +702,13 @@ void ADiceGameManager::LineUpEnemyDice(float DeltaTime)
 void ADiceGameManager::StartPlayerTurn()
 {
 	CurrentPhase = EGamePhase::PlayerTurn;
+
+	// Set timer to show "E TO BLITZ"
+	URoundTimerComponent* Timer = GetRoundTimer();
+	if (Timer)
+	{
+		Timer->SetPlayerReady();
+	}
 }
 
 void ADiceGameManager::PlayerThrowDice()
@@ -756,10 +801,21 @@ void ADiceGameManager::CheckPlayerDiceSettled()
 		if (PlayerDiceMatched.IsValidIndex(i) && PlayerDiceMatched[i]) continue;
 		if (PlayerDiceModified.IsValidIndex(i) && PlayerDiceModified[i]) continue;
 
-		if (!D->IsStill())
+		if (D->IsStill())
+		{
+			// Play sound for this dice if it just landed
+			if (!D->bHasPlayedLandSound)
+			{
+				D->bHasPlayedLandSound = true;
+				if (SoundManager)
+				{
+					SoundManager->PlayDiceRollAtLocation(D->GetActorLocation());
+				}
+			}
+		}
+		else
 		{
 			AllSettled = false;
-			break;
 		}
 	}
 
@@ -933,6 +989,7 @@ void ADiceGameManager::StartMatchingPhase()
 	CurrentPhase = EGamePhase::PlayerMatching;
 	SelectionMode = 0;
 	SelectedDiceIndex = 0;
+	LastHoveredDice = nullptr;
 
 	for (int32 i = 0; i < PlayerDiceMatched.Num(); i++)
 	{
@@ -977,11 +1034,25 @@ void ADiceGameManager::TryMatchDice(int32 PlayerIndex, int32 EnemyIndex)
 		// Start Balatro-style match animation
 		StartMatchAnimation(PlayerIndex, EnemyIndex);
 	}
+	else
+	{
+		// Play error sound for invalid match
+		if (SoundManager)
+		{
+			SoundManager->PlayError();
+		}
+	}
 }
 
 void ADiceGameManager::StartMatchAnimation(int32 PlayerIdx, int32 EnemyIdx)
 {
 	if (!PlayerDice.IsValidIndex(PlayerIdx) || !EnemyDice.IsValidIndex(EnemyIdx)) return;
+
+	// Play match sound
+	if (SoundManager)
+	{
+		SoundManager->PlayDiceMatch();
+	}
 
 	bMatchAnimating = true;
 	MatchPlayerIndex = PlayerIdx;
@@ -1079,20 +1150,23 @@ void ADiceGameManager::TryApplyModifier(ADiceModifier* Modifier, int32 DiceIndex
 	int32 OldValue = PlayerResults[DiceIndex];
 	int32 NewValue = Modifier->ApplyToValue(OldValue);
 
-	// Check if modifier would have no effect or invalid
+	// Check if modifier would have no effect or result in invalid value
 	if (Modifier->ModifierType == EModifierType::MinusOne && OldValue <= 1)
 	{
 		// Can't go below 1 - reject
+		if (SoundManager) SoundManager->PlayError();
 		return;
 	}
 	if (Modifier->ModifierType == EModifierType::PlusOne && OldValue >= 6)
 	{
 		// Can't go above 6 - reject
+		if (SoundManager) SoundManager->PlayError();
 		return;
 	}
-	if (Modifier->ModifierType == EModifierType::PlusTwo && OldValue >= 6)
+	if (Modifier->ModifierType == EModifierType::PlusTwo && OldValue >= 5)
 	{
-		// Can't go above 6 - reject (even +1 would cap at 6)
+		// Can't go above 6 - reject (5+2=7, 6+2=8 are invalid)
+		if (SoundManager) SoundManager->PlayError();
 		return;
 	}
 
@@ -1307,6 +1381,12 @@ void ADiceGameManager::RerollSingleDice(int32 DiceIndex)
 	ADice* Dice = PlayerDice[DiceIndex];
 	if (!Dice) return;
 
+	// Play dice roll sound immediately on reroll
+	if (SoundManager)
+	{
+		SoundManager->PlayDiceRollAtLocation(Dice->GetActorLocation());
+	}
+
 	// Store modifier position for throw direction
 	FVector ModPos = Dice->GetActorLocation();
 
@@ -1337,6 +1417,9 @@ void ADiceGameManager::RerollSingleDice(int32 DiceIndex)
 	);
 
 	Dice->Throw(ThrowDir, DiceThrowForce * 0.6f);
+
+	// Skip landing sound since we already played on throw
+	Dice->bHasPlayedLandSound = true;
 
 	// Mark that we need to wait for this dice to settle
 	bPlayerDiceSettled = false;
@@ -1438,6 +1521,12 @@ void ADiceGameManager::RerollAllUnmatchedDice()
 		ADice* Dice = PlayerDice[i];
 		if (!Dice) continue;
 
+		// Play dice roll sound immediately for each dice
+		if (SoundManager)
+		{
+			SoundManager->PlayDiceRollAtLocation(Dice->GetActorLocation());
+		}
+
 		FVector SpawnPos = Dice->GetActorLocation();
 
 		// Random rotation for drama
@@ -1460,6 +1549,10 @@ void ADiceGameManager::RerollAllUnmatchedDice()
 		);
 
 		Dice->Throw(ThrowDir, DiceThrowForce);
+
+		// Skip landing sound since we already played on throw
+		Dice->bHasPlayedLandSound = true;
+
 		bAnyRerolled = true;
 	}
 
@@ -1484,6 +1577,14 @@ void ADiceGameManager::CheckAllMatched()
 
 	if (MatchCount >= EnemyDice.Num())
 	{
+		// Stop the timer - player won this round!
+		URoundTimerComponent* Timer = GetRoundTimer();
+		if (Timer)
+		{
+			Timer->StopCountdown();
+			Timer->SetHold();
+		}
+
 		DeactivateModifiers();
 		ResetCamera();
 
@@ -1926,6 +2027,16 @@ void ADiceGameManager::UpdateMouseInput()
 			}
 		}
 
+		// Play hover sound when hovering a new dice
+		if (NewHoveredDice != nullptr && NewHoveredDice != LastHoveredDice)
+		{
+			if (SoundManager)
+			{
+				SoundManager->PlayHover();
+			}
+		}
+		LastHoveredDice = NewHoveredDice;
+
 		// Only update highlights if hovered dice changed
 		for (ADice* D : PlayerDice)
 		{
@@ -1991,6 +2102,12 @@ FVector ADiceGameManager::GetMouseWorldPosition()
 
 void ADiceGameManager::StartDragging(ADice* Dice, int32 Index)
 {
+	// Play pickup sound
+	if (SoundManager)
+	{
+		SoundManager->PlayPickUp();
+	}
+
 	bIsDragging = true;
 	DraggedDice = Dice;
 	DraggedDiceIndex = Index;
@@ -2650,6 +2767,14 @@ bool ADiceGameManager::CanStillMatch()
 
 void ADiceGameManager::GiveUpRound()
 {
+	// Stop the timer
+	URoundTimerComponent* Timer = GetRoundTimer();
+	if (Timer)
+	{
+		Timer->StopCountdown();
+		Timer->SetHold();
+	}
+
 	// Deactivate modifiers and reset camera
 	DeactivateModifiers();
 	ResetCamera();
@@ -2852,6 +2977,13 @@ void ADiceGameManager::UpdateModifierShuffle(float DeltaTime)
 
 		bModifierShuffling = false;
 		ActivateModifiers();
+
+		// Start the countdown timer now that matching phase is ready
+		URoundTimerComponent* Timer = GetRoundTimer();
+		if (Timer)
+		{
+			Timer->StartCountdown();
+		}
 	}
 }
 
@@ -2968,6 +3100,37 @@ UPlayerHandComponent* ADiceGameManager::GetEnemyHand()
 		return EnemyHandActor->FindComponentByClass<UPlayerHandComponent>();
 	}
 	return nullptr;
+}
+
+URoundTimerComponent* ADiceGameManager::GetRoundTimer()
+{
+	if (CachedRoundTimer)
+	{
+		return CachedRoundTimer;
+	}
+
+	if (RoundTimerActor)
+	{
+		CachedRoundTimer = RoundTimerActor->FindComponentByClass<URoundTimerComponent>();
+		return CachedRoundTimer;
+	}
+	return nullptr;
+}
+
+void ADiceGameManager::OnRoundTimerExpired()
+{
+	// Time's up! Player loses this round
+	if (CurrentPhase == EGamePhase::PlayerMatching)
+	{
+		// Stop the timer display
+		URoundTimerComponent* Timer = GetRoundTimer();
+		if (Timer)
+		{
+			Timer->StopCountdown();
+		}
+
+		GiveUpRound();
+	}
 }
 
 void ADiceGameManager::TriggerPlayerChop()

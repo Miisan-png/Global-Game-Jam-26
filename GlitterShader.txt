@@ -1,0 +1,66 @@
+GLITTER SHADER FOR UNREAL ENGINE
+=================================
+
+Copy this code into your Custom node's "Code" box.
+
+Required Inputs on Custom node:
+- Base (Float 3) - connect your TextureSample RGB
+- UV (Float 2) - connect TextureCoordinate node
+- T (Float 1) - connect Time node
+
+Output Type: CMOT Float3
+
+Connect Custom output to:
+- Base Color
+- Emissive Color (for glow)
+
+
+SHADER CODE:
+============
+
+// Pixel grid
+float2 Pixel = floor(UV * 100.0);
+
+// Random values per pixel
+float R1 = frac(sin(dot(Pixel, float2(12.9898, 78.233))) * 43758.5);
+float R2 = frac(sin(dot(Pixel, float2(39.346, 11.135))) * 43758.5);
+float R3 = frac(sin(dot(Pixel, float2(73.156, 52.235))) * 43758.5);
+
+// Blink on/off
+float Blink = sin(T * (8.0 + R1 * 12.0) + R1 * 6.28);
+Blink = step(0.6, Blink);
+
+// Only some pixels light up
+float Show = step(0.85, R2);
+
+// Random color per pixel
+float3 Color;
+Color.r = R1;
+Color.g = R2;
+Color.b = R3;
+Color = normalize(Color) * 1.5;
+
+// Final sparkle
+float3 Sparkle = Color * Blink * Show * 2.0;
+
+return Base + Sparkle;
+
+
+TWEAKS:
+=======
+
+MORE pixels visible:
+  Change: step(0.85, R2)  -->  step(0.7, R2)
+
+SMALLER pixels:
+  Change: floor(UV * 100.0)  -->  floor(UV * 200.0)
+
+FASTER blinking:
+  Change: T * (8.0 + R1 * 12.0)  -->  T * (15.0 + R1 * 20.0)
+
+BRIGHTER sparkles:
+  Change: * 2.0  -->  * 4.0
+
+WHITE sparkles only (no color):
+  Replace Color lines with:
+  float3 Color = float3(1.0, 1.0, 1.0);

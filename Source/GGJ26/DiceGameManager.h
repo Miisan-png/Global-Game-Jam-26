@@ -9,6 +9,8 @@
 class AMaskEnemy;
 class ADiceCamera;
 class UPlayerHandComponent;
+class URoundTimerComponent;
+class ASoundManager;
 
 UENUM(BlueprintType)
 enum class EGamePhase : uint8
@@ -159,6 +161,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hands")
 	AActor* EnemyHandActor;  // Actor with PlayerHandComponent (bIsPlayerHand = false)
 
+	// ===== TIMER =====
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Timer", meta = (ToolTip = "Actor with RoundTimerComponent attached"))
+	AActor* RoundTimerActor;
+
+	// ===== SOUND =====
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (ToolTip = "SoundManager actor in the scene"))
+	ASoundManager* SoundManager;
+
 	// ===== STATE (Read Only) =====
 	UPROPERTY(BlueprintReadOnly, Category = "State")
 	EGamePhase CurrentPhase;
@@ -271,6 +281,7 @@ private:
 	int32 SelectionMode;
 	int32 HoveredEnemyIndex;
 	int32 HoveredModifierIndex;
+	ADice* LastHoveredDice;
 
 	// Dragging state
 	bool bIsDragging;
@@ -401,4 +412,10 @@ private:
 	TArray<FVector> ModifierTargetPositions;
 	float FadingModifierAlpha;
 	int32 CurrentRound;
+
+	// Round timer integration
+	URoundTimerComponent* GetRoundTimer();
+	UFUNCTION()
+	void OnRoundTimerExpired();
+	URoundTimerComponent* CachedRoundTimer;
 };

@@ -1,5 +1,6 @@
 #include "PlayerHandComponent.h"
 #include "DiceCamera.h"
+#include "SoundManager.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
@@ -56,6 +57,7 @@ UPlayerHandComponent::UPlayerHandComponent()
 
 	// Hand settings
 	bIsPlayerHand = true;
+	SoundManager = nullptr;
 
 	// Blood VFX defaults
 	BloodParticleSystem = nullptr;
@@ -281,6 +283,12 @@ FVector UPlayerHandComponent::GetKnifeSlicePos(int32 FingerIndex)
 
 void UPlayerHandComponent::FinishChop()
 {
+	// Play knife cut sound
+	if (SoundManager)
+	{
+		SoundManager->PlayKnifeCut();
+	}
+
 	// Camera shake on cut (for both hands)
 	PlayCameraShake();
 

@@ -10,6 +10,7 @@ class UStaticMeshComponent;
 class UNiagaraSystem;
 class UNiagaraComponent;
 class ADiceCamera;
+class ASoundManager;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnChopComplete);
 
@@ -149,6 +150,10 @@ public:
 	// Hand Settings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Settings")
 	bool bIsPlayerHand;  // True = player, False = enemy
+
+	// Sound
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound")
+	ASoundManager* SoundManager;
 
 	// Blood VFX
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blood VFX")

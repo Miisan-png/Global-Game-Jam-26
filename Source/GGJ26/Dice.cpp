@@ -32,6 +32,7 @@ ADice::ADice()
 	Mesh->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
 
 	bHasBeenThrown = false;
+	bHasPlayedLandSound = false;
 	bIsHighlighted = false;
 	bIsMatched = false;
 	bIsBeingDragged = false;
@@ -138,6 +139,7 @@ void ADice::Tick(float DeltaTime)
 void ADice::Throw(FVector Direction, float Force)
 {
 	bHasBeenThrown = true;
+	bHasPlayedLandSound = false;  // Reset so landing sound plays again
 
 	Direction.Normalize();
 	Mesh->AddImpulse(Direction * Force, NAME_None, true);

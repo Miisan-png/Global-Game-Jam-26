@@ -4,6 +4,7 @@
 #include "GameFramework/Actor.h"
 #include "Dice.h"
 #include "DiceModifier.h"
+#include "IRButtonComponent.h"
 #include "DiceGameManager.generated.h"
 
 class AMaskEnemy;
@@ -11,6 +12,8 @@ class ADiceCamera;
 class UPlayerHandComponent;
 class URoundTimerComponent;
 class ASoundManager;
+class UHangingBoardComponent;
+class UIRButtonComponent;
 
 UENUM(BlueprintType)
 enum class EGamePhase : uint8
@@ -168,6 +171,37 @@ public:
 	// ===== SOUND =====
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (ToolTip = "SoundManager actor in the scene"))
 	ASoundManager* SoundManager;
+
+	// ===== BONUS ROUND =====
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round", meta = (ToolTip = "Actor with HangingBoardComponent"))
+	AActor* HangingBoardActor;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round", meta = (ToolTip = "YES button actor with IRButtonComponent"))
+	AActor* YesButtonActor;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round", meta = (ToolTip = "NO button actor with IRButtonComponent"))
+	AActor* NoButtonActor;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	bool bEnableBonusRound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	float BonusCameraDistance;  // How far back from buttons (X)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	float BonusCameraSide;  // Left/right offset (Y)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	float BonusCameraHeight;  // How high above buttons (Z)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	float BonusCameraPitch;  // Camera angle (negative = look down)
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	float BonusCameraFocusSpeed;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	bool bDebugBonusCamera;  // Lock camera to bonus view for testing
 
 	// ===== STATE (Read Only) =====
 	UPROPERTY(BlueprintReadOnly, Category = "State")
@@ -418,4 +452,34 @@ private:
 	UFUNCTION()
 	void OnRoundTimerExpired();
 	URoundTimerComponent* CachedRoundTimer;
+
+	// Bonus round integration
+	UHangingBoardComponent* GetHangingBoard();
+	UIRButtonComponent* GetYesButton();
+	UIRButtonComponent* GetNoButton();
+	void StartBonusRoundPrompt();
+	UFUNCTION()
+	void OnBoardArrived();
+	UFUNCTION()
+	void OnBonusButtonPressed(EIRButtonType ButtonType);
+	UFUNCTION()
+	void OnBoardRetracted();
+
+	UHangingBoardComponent* CachedHangingBoard;
+	UIRButtonComponent* CachedYesButton;
+	UIRButtonComponent* CachedNoButton;
+	bool bWaitingForBonusChoice;
+	bool bBonusRoundAccepted;
+
+	// Bonus round camera
+	void StartBonusButtonCameraFocus();
+	void StartBonusButtonCameraReturn();
+	void UpdateBonusCameraFocus(float DeltaTime);
+	FVector BonusCameraTargetPos;
+	FRotator BonusCameraTargetRot;
+	FVector BonusCameraOriginalPos;
+	FRotator BonusCameraOriginalRot;
+	float BonusCameraProgress;
+	bool bBonusCameraFocusing;
+	bool bBonusCameraReturning;
 };

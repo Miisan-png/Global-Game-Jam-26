@@ -4,6 +4,8 @@
 #include "PlayerHandComponent.h"
 #include "RoundTimerComponent.h"
 #include "SoundManager.h"
+#include "HangingBoardComponent.h"
+#include "IRButtonComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/PlayerController.h"
@@ -165,6 +167,28 @@ ADiceGameManager::ADiceGameManager()
 
 	// Sound
 	SoundManager = nullptr;
+
+	// Bonus round
+	HangingBoardActor = nullptr;
+	YesButtonActor = nullptr;
+	NoButtonActor = nullptr;
+	bEnableBonusRound = true;
+	CachedHangingBoard = nullptr;
+	CachedYesButton = nullptr;
+	CachedNoButton = nullptr;
+	bWaitingForBonusChoice = false;
+	bBonusRoundAccepted = false;
+
+	// Bonus round camera
+	BonusCameraDistance = 80.0f;   // Back from buttons (X)
+	BonusCameraSide = 0.0f;        // Left/right (Y)
+	BonusCameraHeight = 50.0f;     // Above buttons (Z)
+	BonusCameraPitch = 0.0f;       // 0 = auto look at buttons, or override
+	BonusCameraFocusSpeed = 2.5f;
+	bDebugBonusCamera = false;
+	BonusCameraProgress = 0.0f;
+	bBonusCameraFocusing = false;
+	bBonusCameraReturning = false;
 }
 
 void ADiceGameManager::BeginPlay()
@@ -198,6 +222,24 @@ void ADiceGameManager::BeginPlay()
 	if (Timer)
 	{
 		Timer->OnTimerExpired.AddDynamic(this, &ADiceGameManager::OnRoundTimerExpired);
+	}
+
+	// Bind to bonus round events
+	UHangingBoardComponent* Board = GetHangingBoard();
+	if (Board)
+	{
+		Board->OnBoardArrived.AddDynamic(this, &ADiceGameManager::OnBoardArrived);
+		Board->OnBoardRetracted.AddDynamic(this, &ADiceGameManager::OnBoardRetracted);
+	}
+	UIRButtonComponent* YesBtn = GetYesButton();
+	if (YesBtn)
+	{
+		YesBtn->OnButtonPressed.AddDynamic(this, &ADiceGameManager::OnBonusButtonPressed);
+	}
+	UIRButtonComponent* NoBtn = GetNoButton();
+	if (NoBtn)
+	{
+		NoBtn->OnButtonPressed.AddDynamic(this, &ADiceGameManager::OnBonusButtonPressed);
 	}
 }
 
@@ -258,6 +300,46 @@ void ADiceGameManager::Tick(float DeltaTime)
 
 	// Always update camera pan (so it works during all phases)
 	UpdateCameraPan(DeltaTime);
+
+	// Update bonus round camera
+	UpdateBonusCameraFocus(DeltaTime);
+
+	// Debug: lock camera to bonus button view
+	if (bDebugBonusCamera)
+	{
+		// Calculate bonus camera position
+		FVector ButtonCenter = FVector::ZeroVector;
+		int32 ButtonCount = 0;
+		if (YesButtonActor) { ButtonCenter += YesButtonActor->GetActorLocation(); ButtonCount++; }
+		if (NoButtonActor) { ButtonCenter += NoButtonActor->GetActorLocation(); ButtonCount++; }
+		if (ButtonCount > 0) ButtonCenter /= ButtonCount;
+
+		FVector DebugCamPos;
+		DebugCamPos.X = ButtonCenter.X - BonusCameraDistance;
+		DebugCamPos.Y = ButtonCenter.Y + BonusCameraSide;
+		DebugCamPos.Z = ButtonCenter.Z + BonusCameraHeight;
+
+		FRotator DebugCamRot;
+		if (FMath::IsNearlyZero(BonusCameraPitch))
+		{
+			// Auto look at buttons
+			FVector LookDir = (ButtonCenter - DebugCamPos).GetSafeNormal();
+			DebugCamRot = LookDir.Rotation();
+		}
+		else
+		{
+			// Use manual pitch, auto yaw
+			FVector LookDir = (ButtonCenter - DebugCamPos).GetSafeNormal();
+			DebugCamRot = FRotator(BonusCameraPitch, LookDir.Rotation().Yaw, 0.0f);
+		}
+
+		ADiceCamera* Cam = FindCamera();
+		if (Cam)
+		{
+			Cam->SetActorLocation(DebugCamPos);
+			Cam->SetActorRotation(DebugCamRot);
+		}
+	}
 
 	// Update dice disperse animation
 	UpdateDiceDisperse(DeltaTime);
@@ -3175,23 +3257,15 @@ void ADiceGameManager::OnPlayerChopComplete()
 		return;
 	}
 
-	// Continue to next round - enemy throws automatically
-	CurrentRound++;
-	ClearAllDice();
-
-	EnemyResults.Empty();
-	PlayerResults.Empty();
-	PlayerDiceMatched.Empty();
-	EnemyDiceMatched.Empty();
-	PlayerDiceModified.Empty();
-	PlayerDiceAtModifier.Empty();
-	WaitTimer = 0.0f;
-	SelectionMode = 0;
-	SelectedDiceIndex = -1;
-
-	// Enemy throws new dice
-	CurrentPhase = EGamePhase::EnemyThrowing;
-	EnemyThrowDice();
+	// Trigger bonus round prompt if enabled
+	if (bEnableBonusRound)
+	{
+		StartBonusRoundPrompt();
+	}
+	else
+	{
+		ContinueToNextRound();
+	}
 }
 
 void ADiceGameManager::OnEnemyChopComplete()
@@ -3206,9 +3280,246 @@ void ADiceGameManager::OnEnemyChopComplete()
 		return;
 	}
 
-	// Player won the round, continue to next round - enemy throws again
-	CurrentRound++;
+	// Trigger bonus round prompt if enabled
+	if (bEnableBonusRound)
+	{
+		StartBonusRoundPrompt();
+	}
+	else
+	{
+		ContinueToNextRound();
+	}
+}
 
-	CurrentPhase = EGamePhase::EnemyThrowing;
-	EnemyThrowDice();
+// ==================== BONUS ROUND ====================
+
+UHangingBoardComponent* ADiceGameManager::GetHangingBoard()
+{
+	if (CachedHangingBoard)
+	{
+		return CachedHangingBoard;
+	}
+
+	if (HangingBoardActor)
+	{
+		CachedHangingBoard = HangingBoardActor->FindComponentByClass<UHangingBoardComponent>();
+		return CachedHangingBoard;
+	}
+	return nullptr;
+}
+
+UIRButtonComponent* ADiceGameManager::GetYesButton()
+{
+	if (CachedYesButton)
+	{
+		return CachedYesButton;
+	}
+
+	if (YesButtonActor)
+	{
+		CachedYesButton = YesButtonActor->FindComponentByClass<UIRButtonComponent>();
+		return CachedYesButton;
+	}
+	return nullptr;
+}
+
+UIRButtonComponent* ADiceGameManager::GetNoButton()
+{
+	if (CachedNoButton)
+	{
+		return CachedNoButton;
+	}
+
+	if (NoButtonActor)
+	{
+		CachedNoButton = NoButtonActor->FindComponentByClass<UIRButtonComponent>();
+		return CachedNoButton;
+	}
+	return nullptr;
+}
+
+void ADiceGameManager::StartBonusRoundPrompt()
+{
+	bWaitingForBonusChoice = true;
+	bBonusRoundAccepted = false;
+
+	// Show the hanging board
+	UHangingBoardComponent* Board = GetHangingBoard();
+	if (Board)
+	{
+		Board->ShowBoard(TEXT("MASQUERADE?"));
+	}
+}
+
+void ADiceGameManager::OnBoardArrived()
+{
+	// Board has arrived, now activate both buttons
+	UIRButtonComponent* YesBtn = GetYesButton();
+	if (YesBtn)
+	{
+		YesBtn->ActivateButton();
+	}
+	UIRButtonComponent* NoBtn = GetNoButton();
+	if (NoBtn)
+	{
+		NoBtn->ActivateButton();
+	}
+
+	// Focus camera on buttons
+	StartBonusButtonCameraFocus();
+}
+
+void ADiceGameManager::OnBonusButtonPressed(EIRButtonType ButtonType)
+{
+	// Deactivate both buttons
+	UIRButtonComponent* YesBtn = GetYesButton();
+	if (YesBtn)
+	{
+		YesBtn->DeactivateButton();
+	}
+	UIRButtonComponent* NoBtn = GetNoButton();
+	if (NoBtn)
+	{
+		NoBtn->DeactivateButton();
+	}
+
+	// Handle choice
+	if (ButtonType == EIRButtonType::Yes)
+	{
+		bBonusRoundAccepted = true;
+		UE_LOG(LogTemp, Warning, TEXT("BONUS ROUND ACCEPTED! Starting Masquerade..."));
+	}
+	else
+	{
+		bBonusRoundAccepted = false;
+		UE_LOG(LogTemp, Warning, TEXT("Bonus round declined. Continuing..."));
+	}
+
+	// Return camera to game view
+	StartBonusButtonCameraReturn();
+
+	// Hide the board
+	UHangingBoardComponent* Board = GetHangingBoard();
+	if (Board)
+	{
+		Board->HideBoard();
+	}
+}
+
+void ADiceGameManager::OnBoardRetracted()
+{
+	bWaitingForBonusChoice = false;
+
+	if (bBonusRoundAccepted)
+	{
+		// TODO: Bonus round will handle continuing
+		// For now just print
+		UE_LOG(LogTemp, Warning, TEXT("Bonus round would start here..."));
+		ContinueToNextRound();
+	}
+	else
+	{
+		// Player chose NO, continue with normal game
+		ContinueToNextRound();
+	}
+}
+
+void ADiceGameManager::StartBonusButtonCameraFocus()
+{
+	ADiceCamera* Cam = FindCamera();
+	if (!Cam) return;
+
+	// Store original camera position (use the game's stored original, not current)
+	BonusCameraOriginalPos = OriginalCameraLocation;
+	BonusCameraOriginalRot = OriginalCameraRotation;
+
+	// Find center between both buttons
+	FVector ButtonCenter = FVector::ZeroVector;
+	int32 ButtonCount = 0;
+
+	if (YesButtonActor)
+	{
+		ButtonCenter += YesButtonActor->GetActorLocation();
+		ButtonCount++;
+	}
+	if (NoButtonActor)
+	{
+		ButtonCenter += NoButtonActor->GetActorLocation();
+		ButtonCount++;
+	}
+
+	if (ButtonCount > 0)
+	{
+		ButtonCenter /= ButtonCount;
+	}
+
+	// Position with all offsets
+	BonusCameraTargetPos.X = ButtonCenter.X - BonusCameraDistance;
+	BonusCameraTargetPos.Y = ButtonCenter.Y + BonusCameraSide;
+	BonusCameraTargetPos.Z = ButtonCenter.Z + BonusCameraHeight;
+
+	// Look at button center (use manual pitch if set)
+	FVector LookDir = (ButtonCenter - BonusCameraTargetPos).GetSafeNormal();
+	if (FMath::IsNearlyZero(BonusCameraPitch))
+	{
+		BonusCameraTargetRot = LookDir.Rotation();
+	}
+	else
+	{
+		BonusCameraTargetRot = FRotator(BonusCameraPitch, LookDir.Rotation().Yaw, 0.0f);
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("Bonus Camera: Target Pos (%.1f, %.1f, %.1f), Button Center (%.1f, %.1f, %.1f)"),
+		BonusCameraTargetPos.X, BonusCameraTargetPos.Y, BonusCameraTargetPos.Z,
+		ButtonCenter.X, ButtonCenter.Y, ButtonCenter.Z);
+
+	BonusCameraProgress = 0.0f;
+	bBonusCameraFocusing = true;
+	bBonusCameraReturning = false;
+}
+
+void ADiceGameManager::StartBonusButtonCameraReturn()
+{
+	BonusCameraProgress = 0.0f;
+	bBonusCameraFocusing = false;
+	bBonusCameraReturning = true;
+}
+
+void ADiceGameManager::UpdateBonusCameraFocus(float DeltaTime)
+{
+	ADiceCamera* Cam = FindCamera();
+	if (!Cam) return;
+
+	if (bBonusCameraFocusing)
+	{
+		BonusCameraProgress += DeltaTime * BonusCameraFocusSpeed;
+		BonusCameraProgress = FMath::Clamp(BonusCameraProgress, 0.0f, 1.0f);
+
+		float T = EaseOutCubic(BonusCameraProgress);
+		FVector NewPos = FMath::Lerp(BonusCameraOriginalPos, BonusCameraTargetPos, T);
+		FRotator NewRot = FMath::Lerp(BonusCameraOriginalRot, BonusCameraTargetRot, T);
+		Cam->SetActorLocation(NewPos);
+		Cam->SetActorRotation(NewRot);
+
+		if (BonusCameraProgress >= 1.0f)
+		{
+			bBonusCameraFocusing = false;
+		}
+	}
+	else if (bBonusCameraReturning)
+	{
+		BonusCameraProgress += DeltaTime * BonusCameraFocusSpeed;
+		BonusCameraProgress = FMath::Clamp(BonusCameraProgress, 0.0f, 1.0f);
+
+		float T = EaseOutCubic(BonusCameraProgress);
+		FVector NewPos = FMath::Lerp(BonusCameraTargetPos, BonusCameraOriginalPos, T);
+		FRotator NewRot = FMath::Lerp(BonusCameraTargetRot, BonusCameraOriginalRot, T);
+		Cam->SetActorLocation(NewPos);
+		Cam->SetActorRotation(NewRot);
+
+		if (BonusCameraProgress >= 1.0f)
+		{
+			bBonusCameraReturning = false;
+		}
+	}
 }

@@ -203,6 +203,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
 	bool bDebugBonusCamera;  // Lock camera to bonus view for testing
 
+	// Masked Dice visuals
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	UStaticMesh* MaskedDiceMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	UMaterialInterface* MaskedDiceMaterial;
+
+	// Bonus Round Gameplay
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	FVector BonusDiceSpawnPos;  // Where enemy masked dice spawn
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	FVector BonusPlayerDicePos;  // Where YES/NO choice dice appear
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bonus Round")
+	float BonusDiceSpacing;  // Space between dice
+
 	// ===== STATE (Read Only) =====
 	UPROPERTY(BlueprintReadOnly, Category = "State")
 	EGamePhase CurrentPhase;
@@ -470,6 +487,56 @@ private:
 	UIRButtonComponent* CachedNoButton;
 	bool bWaitingForBonusChoice;
 	bool bBonusRoundAccepted;
+
+	// Bonus Round Gameplay State
+	// Phases: 0=inactive, 1=enemy throw, 2=enemy settle, 3=enemy lineup,
+	//         4=player throw, 5=player settle, 6=player lineup, 7=player drag,
+	//         8=reveal, 9=result pop
+	int32 BonusPhase;
+
+	TArray<ADice*> BonusMaskedDice;    // Enemy's 2 masked dice
+	ADice* BonusPlayerDice;            // Player's YES dice to drag
+	ADice* BonusRevealDice;            // Shows the total after player chooses
+
+	int32 BonusEnemyTotal;             // Sum of enemy dice (not 7)
+	bool bBonusIsHigher;               // True if total > 7
+	bool bPlayerGuessedHigher;         // What player chose
+	int32 BonusDiceModifier;           // +1 or -1 for next round
+	bool bBonusWon;                    // Result of bonus round
+
+	float BonusAnimTimer;
+	float BonusLineupProgress;
+	float BonusPlayerLineupProgress;
+	float BonusRevealProgress;
+
+	TArray<FVector> BonusDiceStartPositions;
+	TArray<FRotator> BonusDiceStartRotations;
+	TArray<FVector> BonusDiceTargetPositions;
+	TArray<FRotator> BonusDiceTargetRotations;
+
+	FVector BonusPlayerDiceStartPos;
+	FRotator BonusPlayerDiceStartRot;
+	FVector BonusPlayerDiceTargetPos;
+	FRotator BonusPlayerDiceTargetRot;
+
+	void StartBonusRoundGame();
+	void ThrowBonusMaskedDice();
+	void CheckBonusDiceSettled();
+	void PrepareBonusDiceLineup();
+	void LineUpBonusDice(float DeltaTime);
+	void ThrowBonusPlayerDice();
+	void CheckBonusPlayerDiceSettled();
+	void PrepareBonusPlayerLineup();
+	void LineUpBonusPlayerDice(float DeltaTime);
+	void StartBonusPlayerTurn();
+	void OnBonusModifierSelected(bool bHigher);
+	void SpawnBonusRevealDice();
+	void UpdateBonusReveal(float DeltaTime);
+	void ShowBonusResult();
+	void EndBonusRound(bool bWon);
+	void UpdateBonusRound(float DeltaTime);
+	void CleanupBonusRound();
+	int32 GenerateBonusTotal();
 
 	// Bonus round camera
 	void StartBonusButtonCameraFocus();

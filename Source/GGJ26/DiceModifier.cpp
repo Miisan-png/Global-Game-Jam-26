@@ -41,6 +41,7 @@ ADiceModifier::ADiceModifier()
 	bIsHighlighted = false;
 	bIsInvalid = false;
 	bIsActive = false;
+	bIsHidden = false;
 
 	BaseColor = FLinearColor(0.2f, 0.2f, 0.3f, 1.0f);
 	HighlightColor = FLinearColor(0.4f, 0.8f, 0.4f, 1.0f);
@@ -142,6 +143,7 @@ bool ADiceModifier::CanApplyToValue(int32 Value)
 	}
 }
 
+
 void ADiceModifier::SetActive(bool bActive)
 {
 	if (bIsUsed) return;
@@ -154,6 +156,20 @@ void ADiceModifier::SetActive(bool bActive)
 
 	bIsActive = bActive;
 	UpdateVisuals();
+}
+
+void ADiceModifier::SetHidden(bool bHide)
+{
+	bIsHidden = bHide;
+
+	if (ModifierText)
+	{
+		ModifierText->SetVisibility(!bHide);
+	}
+	if (CollisionBox)
+	{
+		CollisionBox->SetCollisionEnabled(bHide ? ECollisionEnabled::NoCollision : ECollisionEnabled::QueryAndPhysics);
+	}
 }
 
 void ADiceModifier::UseModifier()
@@ -190,6 +206,8 @@ FString ADiceModifier::GetModifierDisplayText()
 		case EModifierType::Flip: return TEXT("FLIP");
 		case EModifierType::RerollOne: return TEXT("RE:1");
 		case EModifierType::RerollAll: return TEXT("RE:ALL");
+		case EModifierType::BonusHigher: return TEXT(">7");
+		case EModifierType::BonusLower: return TEXT("<7");
 		default: return TEXT("?");
 	}
 }
@@ -212,7 +230,16 @@ void ADiceModifier::UpdateBasePosition()
 
 void ADiceModifier::UpdateVisuals()
 {
+	// Respect hidden state - don't show anything if hidden
+	if (bIsHidden)
+	{
+		if (ModifierText) ModifierText->SetVisibility(false);
+		if (PlaneMesh) PlaneMesh->SetVisibility(false);
+		return;
+	}
+
 	ModifierText->SetText(FText::FromString(GetModifierDisplayText()));
+	ModifierText->SetVisibility(true);
 
 	// Always keep plane hidden
 	if (PlaneMesh)

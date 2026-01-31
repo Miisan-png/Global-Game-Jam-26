@@ -64,6 +64,9 @@ public:
 	void SetFaceNumbersVisible(bool bVisible);
 
 	UFUNCTION(BlueprintCallable)
+	void SetAllFacesText(const FString& Text);
+
+	UFUNCTION(BlueprintCallable)
 	void SetTextSettings(float Size, float Offset);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")

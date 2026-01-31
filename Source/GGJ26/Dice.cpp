@@ -371,6 +371,23 @@ void ADice::SetFaceNumbersVisible(bool bVisible)
 	}
 }
 
+void ADice::SetAllFacesText(const FString& Text)
+{
+	for (int32 i = 0; i < FaceTexts.Num(); i++)
+	{
+		UTextRenderComponent* TextComp = FaceTexts[i];
+		if (TextComp)
+		{
+			TextComp->SetText(FText::FromString(Text));
+			TextComp->SetWorldSize(FaceTextSize * 0.6f);  // Smaller to fit "YES" text
+			// Push text further out so it's visible
+			FVector LocalPos = GetFaceNormal(i + 1) * (FaceTextOffset + 5.0f);
+			TextComp->SetRelativeLocation(LocalPos);
+			TextComp->SetVisibility(true);
+		}
+	}
+}
+
 void ADice::SetTextSettings(float Size, float Offset)
 {
 	FaceTextSize = Size;

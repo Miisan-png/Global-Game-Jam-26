@@ -186,6 +186,27 @@ ADiceGameManager::ADiceGameManager()
 	BonusCameraPitch = 0.0f;       // 0 = auto look at buttons, or override
 	BonusCameraFocusSpeed = 2.5f;
 	bDebugBonusCamera = false;
+
+	// Masked dice
+	MaskedDiceMesh = nullptr;
+	MaskedDiceMaterial = nullptr;
+	BonusDiceSpawnPos = FVector(0.0f, 0.0f, 100.0f);
+	BonusPlayerDicePos = FVector(0.0f, 50.0f, 10.0f);
+	BonusDiceSpacing = 30.0f;
+
+	// Bonus round gameplay
+	BonusPhase = 0;  // Inactive
+	BonusPlayerDice = nullptr;
+	BonusRevealDice = nullptr;
+	BonusEnemyTotal = 0;
+	bBonusIsHigher = false;
+	bPlayerGuessedHigher = false;
+	BonusDiceModifier = 0;
+	bBonusWon = false;
+	BonusAnimTimer = 0.0f;
+	BonusLineupProgress = 0.0f;
+	BonusPlayerLineupProgress = 0.0f;
+	BonusRevealProgress = 0.0f;
 	BonusCameraProgress = 0.0f;
 	bBonusCameraFocusing = false;
 	bBonusCameraReturning = false;
@@ -277,6 +298,13 @@ void ADiceGameManager::FindAllModifiers()
 		if (Mod)
 		{
 			AllModifiers.Add(Mod);
+			// Bonus modifiers start hidden (only visible during bonus round)
+			if (Mod->ModifierType == EModifierType::BonusHigher ||
+				Mod->ModifierType == EModifierType::BonusLower)
+			{
+				Mod->SetActive(false);
+				Mod->SetHidden(true);  // Completely hidden
+			}
 		}
 	}
 }
@@ -303,6 +331,9 @@ void ADiceGameManager::Tick(float DeltaTime)
 
 	// Update bonus round camera
 	UpdateBonusCameraFocus(DeltaTime);
+
+	// Update bonus round gameplay
+	UpdateBonusRound(DeltaTime);
 
 	// Debug: lock camera to bonus button view
 	if (bDebugBonusCamera)
@@ -1970,6 +2001,19 @@ ADiceCamera* ADiceGameManager::FindCamera()
 
 void ADiceGameManager::OnMousePressed()
 {
+	// Allow during bonus round phase 4 (player turn)
+	if (BonusPhase == 7)
+	{
+		FVector HitLocation;
+		AActor* HitActor = GetActorUnderMouse(HitLocation);
+		if (HitActor && HitActor == BonusPlayerDice)
+		{
+			StartDragging(BonusPlayerDice, -99);  // Special index for bonus dice
+			return;
+		}
+		return;
+	}
+
 	if (CurrentPhase != EGamePhase::PlayerMatching) return;
 	if (bDiceReturning || bDiceSnappingToModifier || bDiceFlipping || bMatchAnimating || bWaitingForCameraToRerollAll || bDiceLiftingForReroll || bModifierShuffling) return;
 
@@ -1993,6 +2037,56 @@ void ADiceGameManager::OnMousePressed()
 
 void ADiceGameManager::OnMouseReleased()
 {
+	// Handle bonus round dice release
+	if (BonusPhase == 7 && bIsDragging && DraggedDice == BonusPlayerDice)
+	{
+		FVector DicePos = DraggedDice->GetActorLocation();
+
+		// Check for HIGHER/LOWER modifiers
+		float ClosestDist = 60.0f;
+		ADiceModifier* ClosestMod = nullptr;
+
+		for (ADiceModifier* Mod : AllModifiers)
+		{
+			if (Mod && !Mod->bIsUsed && Mod->bIsActive)
+			{
+				if (Mod->ModifierType == EModifierType::BonusHigher ||
+					Mod->ModifierType == EModifierType::BonusLower)
+				{
+					float Dist = FVector::Dist2D(DicePos, Mod->GetActorLocation());
+					if (Dist < ClosestDist)
+					{
+						ClosestDist = Dist;
+						ClosestMod = Mod;
+					}
+				}
+			}
+		}
+
+		if (ClosestMod)
+		{
+			// Player made a choice!
+			bool bChoseHigher = (ClosestMod->ModifierType == EModifierType::BonusHigher);
+			ClosestMod->UseModifier();
+
+			// Stop dragging
+			DraggedDice->SetHighlighted(false);
+			DraggedDice->bIsBeingDragged = false;
+			bIsDragging = false;
+			DraggedDice = nullptr;
+			DraggedDiceIndex = -1;
+
+			// Process the choice
+			OnBonusModifierSelected(bChoseHigher);
+		}
+		else
+		{
+			// No modifier hit - bounce back
+			PhysicsBounceBack();
+		}
+		return;
+	}
+
 	if (!bIsDragging || CurrentPhase != EGamePhase::PlayerMatching) return;
 	if (!DraggedDice) return;
 
@@ -2465,9 +2559,15 @@ void ADiceGameManager::ActivateModifiers()
 {
 	for (ADiceModifier* Mod : AllModifiers)
 	{
-		// Skip permanently removed modifiers
+		// Skip permanently removed modifiers and bonus modifiers
 		if (Mod && !Mod->bIsUsed && !PermanentlyRemovedModifiers.Contains(Mod))
 		{
+			// Bonus modifiers only activate during bonus round
+			if (Mod->ModifierType == EModifierType::BonusHigher ||
+				Mod->ModifierType == EModifierType::BonusLower)
+			{
+				continue;
+			}
 			Mod->SetActive(true);
 		}
 	}
@@ -3383,7 +3483,14 @@ void ADiceGameManager::OnBonusButtonPressed(EIRButtonType ButtonType)
 		NoBtn->DeactivateButton();
 	}
 
-	// Handle choice
+	// Hide the board
+	UHangingBoardComponent* Board = GetHangingBoard();
+	if (Board)
+	{
+		Board->HideBoard();
+	}
+
+	// This is the initial Masquerade? question
 	if (ButtonType == EIRButtonType::Yes)
 	{
 		bBonusRoundAccepted = true;
@@ -3397,13 +3504,6 @@ void ADiceGameManager::OnBonusButtonPressed(EIRButtonType ButtonType)
 
 	// Return camera to game view
 	StartBonusButtonCameraReturn();
-
-	// Hide the board
-	UHangingBoardComponent* Board = GetHangingBoard();
-	if (Board)
-	{
-		Board->HideBoard();
-	}
 }
 
 void ADiceGameManager::OnBoardRetracted()
@@ -3412,10 +3512,8 @@ void ADiceGameManager::OnBoardRetracted()
 
 	if (bBonusRoundAccepted)
 	{
-		// TODO: Bonus round will handle continuing
-		// For now just print
-		UE_LOG(LogTemp, Warning, TEXT("Bonus round would start here..."));
-		ContinueToNextRound();
+		// Start the bonus round minigame!
+		StartBonusRoundGame();
 	}
 	else
 	{
@@ -3522,4 +3620,662 @@ void ADiceGameManager::UpdateBonusCameraFocus(float DeltaTime)
 			bBonusCameraReturning = false;
 		}
 	}
+}
+
+// ==================== BONUS ROUND GAMEPLAY ====================
+
+int32 ADiceGameManager::GenerateBonusTotal()
+{
+	// Generate two dice values where sum is NOT 7
+	int32 Die1, Die2, Total;
+	do
+	{
+		Die1 = FMath::RandRange(1, 6);
+		Die2 = FMath::RandRange(1, 6);
+		Total = Die1 + Die2;
+	} while (Total == 7);
+
+	return Total;
+}
+
+void ADiceGameManager::StartBonusRoundGame()
+{
+	UE_LOG(LogTemp, Warning, TEXT("=== BONUS ROUND START ==="));
+
+	CleanupBonusRound();
+
+	BonusPhase = 1;  // Throwing
+	BonusAnimTimer = 0.0f;
+	BonusDiceModifier = 0;
+	BonusLineupProgress = 0.0f;
+
+	// Generate the enemy total (not 7)
+	BonusEnemyTotal = GenerateBonusTotal();
+	bBonusIsHigher = (BonusEnemyTotal > 7);
+
+	UE_LOG(LogTemp, Warning, TEXT("Bonus Enemy Total: %d (%s than 7)"),
+		BonusEnemyTotal, bBonusIsHigher ? TEXT("HIGHER") : TEXT("LOWER"));
+
+	// Throw the masked dice
+	ThrowBonusMaskedDice();
+}
+
+void ADiceGameManager::ThrowBonusMaskedDice()
+{
+	// Calculate dice values that sum to BonusEnemyTotal
+	int32 Die1 = FMath::RandRange(1, FMath::Min(6, BonusEnemyTotal - 1));
+	int32 Die2 = BonusEnemyTotal - Die1;
+	Die1 = FMath::Clamp(Die1, 1, 6);
+	Die2 = FMath::Clamp(Die2, 1, 6);
+
+	// Use same spawn logic as normal enemy dice
+	AMaskEnemy* Enemy = FindEnemy();
+	FVector SpawnBase;
+	if (Enemy)
+	{
+		SpawnBase = Enemy->GetActorLocation() + EnemyDiceSpawnOffset;
+	}
+	else
+	{
+		// Fallback if no enemy found
+		SpawnBase = GetLineupWorldCenter() + FVector(0, 0, 100.0f);
+	}
+
+	FVector ThrowTarget = GetLineupWorldCenter();
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+
+	for (int32 i = 0; i < 2; i++)
+	{
+		int32 DieValue = (i == 0) ? Die1 : Die2;
+
+		FVector SpawnOffset = FVector(
+			FMath::RandRange(-15.0f, 15.0f),
+			(i - 1.0f) * 20.0f,
+			FMath::RandRange(0.0f, 10.0f)
+		);
+		FVector SpawnLocation = SpawnBase + SpawnOffset;
+		FRotator SpawnRotation = FRotator(
+			FMath::RandRange(0.0f, 360.0f),
+			FMath::RandRange(0.0f, 360.0f),
+			FMath::RandRange(0.0f, 360.0f)
+		);
+
+		ADice* Dice = GetWorld()->SpawnActor<ADice>(ADice::StaticClass(), SpawnLocation, SpawnRotation, SpawnParams);
+		if (Dice)
+		{
+			Dice->CurrentValue = DieValue;
+			Dice->bShowDebugNumbers = bShowDebugGizmos;
+			Dice->DiceSize = DiceScale;
+
+			// Use masked mesh if set, otherwise use enemy mesh
+			UStaticMesh* MeshToUse = MaskedDiceMesh ? MaskedDiceMesh : EnemyDiceMesh;
+			if (MeshToUse)
+			{
+				Dice->SetCustomMesh(MeshToUse, CustomMeshScale);
+			}
+			UMaterialInterface* MatToUse = MaskedDiceMaterial ? MaskedDiceMaterial : EnemyDiceMaterial;
+			if (MatToUse)
+			{
+				Dice->SetCustomMaterial(MatToUse);
+			}
+			Dice->SetFaceNumbersVisible(bShowDiceNumbers);
+			Dice->SetTextColor(EnemyTextColor);
+
+			// Throw towards table with strong downward force
+			UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Dice->GetRootComponent());
+			if (PrimComp)
+			{
+				PrimComp->SetSimulatePhysics(true);
+				FVector ThrowDirection = (ThrowTarget - SpawnLocation).GetSafeNormal();
+				ThrowDirection.Z = -0.8f;  // Strong downward
+				ThrowDirection.Normalize();
+				PrimComp->AddImpulse(ThrowDirection * DiceThrowForce * 1.2f);
+				PrimComp->AddAngularImpulseInDegrees(FVector(
+					FMath::RandRange(-800.f, 800.f),
+					FMath::RandRange(-800.f, 800.f),
+					FMath::RandRange(-800.f, 800.f)));
+			}
+
+			BonusMaskedDice.Add(Dice);
+
+			UE_LOG(LogTemp, Warning, TEXT("Spawned masked dice %d at %s with value %d"),
+				i, *SpawnLocation.ToString(), DieValue);
+		}
+	}
+
+	if (SoundManager)
+	{
+		SoundManager->PlayDiceRoll();
+	}
+}
+
+void ADiceGameManager::CheckBonusDiceSettled()
+{
+	bool bAllSettled = true;
+	for (ADice* Dice : BonusMaskedDice)
+	{
+		if (Dice)
+		{
+			UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Dice->GetRootComponent());
+			if (PrimComp)
+			{
+				FVector Vel = PrimComp->GetPhysicsLinearVelocity();
+				FVector AngVel = PrimComp->GetPhysicsAngularVelocityInDegrees();
+				if (Vel.Size() > 5.0f || AngVel.Size() > 10.0f)
+				{
+					bAllSettled = false;
+					break;
+				}
+			}
+		}
+	}
+
+	if (bAllSettled && BonusAnimTimer > 0.5f)
+	{
+		BonusPhase = 3;  // Lining up
+		PrepareBonusDiceLineup();
+	}
+}
+
+void ADiceGameManager::PrepareBonusDiceLineup()
+{
+	BonusLineupProgress = 0.0f;
+	BonusDiceStartPositions.Empty();
+	BonusDiceStartRotations.Empty();
+	BonusDiceTargetPositions.Empty();
+	BonusDiceTargetRotations.Empty();
+
+	FVector WorldCenter = GetLineupWorldCenter();
+	float LineupDir = FMath::DegreesToRadians(LineupYaw);
+	FVector RightDir = FVector(FMath::Sin(LineupDir), FMath::Cos(LineupDir), 0.0f);
+	FVector ForwardDir = FVector(FMath::Cos(LineupDir), -FMath::Sin(LineupDir), 0.0f);
+
+	// Masked enemy dice go to PLAYER row (close to camera) - swapped for bonus round
+	FVector EnemyRowCenter = WorldCenter + ForwardDir * PlayerRowOffset;
+
+	int32 NumDice = BonusMaskedDice.Num();
+	float TotalWidth = (NumDice - 1) * DiceLineupSpacing;
+	float StartOffset = -TotalWidth * 0.5f;
+
+	for (int32 i = 0; i < NumDice; i++)
+	{
+		ADice* Dice = BonusMaskedDice[i];
+		if (!Dice) continue;
+
+		// Store current position
+		BonusDiceStartPositions.Add(Dice->GetActorLocation());
+		BonusDiceStartRotations.Add(Dice->GetActorRotation());
+
+		// Calculate target
+		float LateralOffset = StartOffset + i * DiceLineupSpacing;
+		FVector TargetPos = EnemyRowCenter + RightDir * LateralOffset;
+		TargetPos.Z = WorldCenter.Z + DiceLineupHeight;
+
+		BonusDiceTargetPositions.Add(TargetPos);
+		BonusDiceTargetRotations.Add(GetRotationForFaceUp(Dice->CurrentValue));
+
+		// Disable physics
+		UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Dice->GetRootComponent());
+		if (PrimComp)
+		{
+			PrimComp->SetSimulatePhysics(false);
+		}
+	}
+}
+
+void ADiceGameManager::LineUpBonusDice(float DeltaTime)
+{
+	BonusLineupProgress += DeltaTime * DiceLineupSpeed;
+
+	if (BonusLineupProgress >= 1.0f)
+	{
+		BonusLineupProgress = 1.0f;
+
+		// Snap to final positions
+		for (int32 i = 0; i < BonusMaskedDice.Num(); i++)
+		{
+			if (BonusMaskedDice[i] && i < BonusDiceTargetPositions.Num())
+			{
+				BonusMaskedDice[i]->SetActorLocation(BonusDiceTargetPositions[i]);
+				BonusMaskedDice[i]->SetActorRotation(BonusDiceTargetRotations[i]);
+			}
+		}
+
+		// Pan camera for player throw
+		StartCameraPan();
+
+		// Move to player throw phase
+		BonusPhase = 4;
+		BonusAnimTimer = 0.0f;
+
+		// Throw player's YES dice
+		ThrowBonusPlayerDice();
+	}
+	else
+	{
+		float T = EaseOutCubic(BonusLineupProgress);
+		for (int32 i = 0; i < BonusMaskedDice.Num(); i++)
+		{
+			if (BonusMaskedDice[i] && i < BonusDiceStartPositions.Num())
+			{
+				FVector NewPos = FMath::Lerp(BonusDiceStartPositions[i], BonusDiceTargetPositions[i], T);
+				FRotator NewRot = FMath::Lerp(BonusDiceStartRotations[i], BonusDiceTargetRotations[i], T);
+				BonusMaskedDice[i]->SetActorLocation(NewPos);
+				BonusMaskedDice[i]->SetActorRotation(NewRot);
+			}
+		}
+	}
+}
+
+void ADiceGameManager::ThrowBonusPlayerDice()
+{
+	// Spawn from camera like normal player dice
+	ADiceCamera* Cam = FindCamera();
+	if (!Cam)
+	{
+		UE_LOG(LogTemp, Error, TEXT("No camera found for bonus player dice throw!"));
+		return;
+	}
+
+	FVector CamLocation = Cam->Camera->GetComponentLocation();
+	FVector CamForward = Cam->Camera->GetForwardVector();
+	FVector SpawnBase = CamLocation + CamForward * 80.0f + FVector(0, 0, 30.0f);
+
+	FVector SpawnLocation = SpawnBase + FVector(
+		FMath::RandRange(-5.0f, 5.0f),
+		FMath::RandRange(-5.0f, 5.0f),
+		FMath::RandRange(-5.0f, 5.0f)
+	);
+	FRotator SpawnRotation = FRotator(
+		FMath::RandRange(0.0f, 360.0f),
+		FMath::RandRange(0.0f, 360.0f),
+		FMath::RandRange(0.0f, 360.0f)
+	);
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+
+	BonusPlayerDice = GetWorld()->SpawnActor<ADice>(ADice::StaticClass(), SpawnLocation, SpawnRotation, SpawnParams);
+	if (BonusPlayerDice)
+	{
+		BonusPlayerDice->CurrentValue = 1;
+		BonusPlayerDice->bShowDebugNumbers = bShowDebugGizmos;
+		BonusPlayerDice->DiceSize = DiceScale;
+
+		if (PlayerDiceMesh)
+		{
+			BonusPlayerDice->SetCustomMesh(PlayerDiceMesh, CustomMeshScale);
+		}
+		if (PlayerDiceMaterial)
+		{
+			BonusPlayerDice->SetCustomMaterial(PlayerDiceMaterial);
+		}
+		// Show "YES" text on all faces
+		BonusPlayerDice->SetAllFacesText(TEXT("YES"));
+		BonusPlayerDice->SetTextColor(PlayerTextColor);
+		if (bPlayerDiceGlow)
+		{
+			BonusPlayerDice->SetGlowEnabled(true);
+		}
+
+		// Throw towards table like normal player dice
+		FVector ThrowDirection = CamForward + FVector(0, 0, 0.1f);
+		ThrowDirection += FVector(
+			FMath::RandRange(-0.1f, 0.1f),
+			FMath::RandRange(-0.1f, 0.1f),
+			0
+		);
+		BonusPlayerDice->Throw(ThrowDirection, DiceThrowForce);
+
+		UE_LOG(LogTemp, Warning, TEXT("Spawned bonus player YES dice at %s"), *SpawnLocation.ToString());
+	}
+
+	if (SoundManager)
+	{
+		SoundManager->PlayDiceRoll();
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("Player YES dice thrown!"));
+}
+
+void ADiceGameManager::CheckBonusPlayerDiceSettled()
+{
+	if (!BonusPlayerDice) return;
+
+	UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(BonusPlayerDice->GetRootComponent());
+	if (PrimComp)
+	{
+		FVector Vel = PrimComp->GetPhysicsLinearVelocity();
+		FVector AngVel = PrimComp->GetPhysicsAngularVelocityInDegrees();
+		if (Vel.Size() < 5.0f && AngVel.Size() < 10.0f && BonusAnimTimer > 0.5f)
+		{
+			BonusPhase = 6;  // Lineup player dice
+			PrepareBonusPlayerLineup();
+		}
+	}
+}
+
+void ADiceGameManager::PrepareBonusPlayerLineup()
+{
+	BonusPlayerLineupProgress = 0.0f;
+
+	if (!BonusPlayerDice) return;
+
+	// Store current position
+	BonusPlayerDiceStartPos = BonusPlayerDice->GetActorLocation();
+	BonusPlayerDiceStartRot = BonusPlayerDice->GetActorRotation();
+
+	// Target: centered in enemy row (far) - player dice goes far in bonus round
+	FVector WorldCenter = GetLineupWorldCenter();
+	float LineupDir = FMath::DegreesToRadians(LineupYaw);
+	FVector ForwardDir = FVector(FMath::Cos(LineupDir), -FMath::Sin(LineupDir), 0.0f);
+	BonusPlayerDiceTargetPos = WorldCenter - ForwardDir * EnemyRowOffset;
+	BonusPlayerDiceTargetPos.Z = WorldCenter.Z + DiceLineupHeight;
+
+	// Face up with value 1
+	BonusPlayerDiceTargetRot = GetRotationForFaceUp(1);
+
+	// Disable physics
+	UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(BonusPlayerDice->GetRootComponent());
+	if (PrimComp)
+	{
+		PrimComp->SetSimulatePhysics(false);
+	}
+}
+
+void ADiceGameManager::LineUpBonusPlayerDice(float DeltaTime)
+{
+	BonusPlayerLineupProgress += DeltaTime * DiceLineupSpeed;
+
+	if (BonusPlayerLineupProgress >= 1.0f)
+	{
+		BonusPlayerLineupProgress = 1.0f;
+
+		if (BonusPlayerDice)
+		{
+			BonusPlayerDice->SetActorLocation(BonusPlayerDiceTargetPos);
+			BonusPlayerDice->SetActorRotation(BonusPlayerDiceTargetRot);
+		}
+
+		// Start player turn
+		StartBonusPlayerTurn();
+	}
+	else
+	{
+		float T = EaseOutCubic(BonusPlayerLineupProgress);
+		if (BonusPlayerDice)
+		{
+			FVector NewPos = FMath::Lerp(BonusPlayerDiceStartPos, BonusPlayerDiceTargetPos, T);
+			FRotator NewRot = FMath::Lerp(BonusPlayerDiceStartRot, BonusPlayerDiceTargetRot, T);
+			BonusPlayerDice->SetActorLocation(NewPos);
+			BonusPlayerDice->SetActorRotation(NewRot);
+		}
+	}
+}
+
+void ADiceGameManager::StartBonusPlayerTurn()
+{
+	BonusPhase = 7;
+	BonusAnimTimer = 0.0f;
+
+	// Show ONLY bonus modifiers, hide all regular ones
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod)
+		{
+			if (Mod->ModifierType == EModifierType::BonusHigher ||
+				Mod->ModifierType == EModifierType::BonusLower)
+			{
+				// Show and activate bonus modifiers
+				Mod->SetHidden(false);
+				Mod->SetActive(true);
+				Mod->bIsUsed = false;
+			}
+			else
+			{
+				// Hide all regular modifiers during bonus round
+				Mod->SetActive(false);
+				Mod->SetHidden(true);
+			}
+		}
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("Drag YES dice to >7 or <7 modifier!"));
+}
+
+void ADiceGameManager::OnBonusModifierSelected(bool bHigher)
+{
+	bPlayerGuessedHigher = bHigher;
+	bBonusWon = (bPlayerGuessedHigher == bBonusIsHigher);
+
+	UE_LOG(LogTemp, Warning, TEXT("Player chose: %s"), bHigher ? TEXT(">7") : TEXT("<7"));
+
+	// Deactivate modifiers
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod && (Mod->ModifierType == EModifierType::BonusHigher ||
+					Mod->ModifierType == EModifierType::BonusLower))
+		{
+			Mod->SetActive(false);
+		}
+	}
+
+	// Move to reveal phase - spawn dice showing the total
+	BonusPhase = 8;
+	BonusAnimTimer = 0.0f;
+	BonusRevealProgress = 0.0f;
+	SpawnBonusRevealDice();
+}
+
+void ADiceGameManager::SpawnBonusRevealDice()
+{
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	// Spawn reveal dice between enemy dice, above table
+	FVector WorldCenter = GetLineupWorldCenter();
+	float LineupDir = FMath::DegreesToRadians(LineupYaw);
+	FVector ForwardDir = FVector(FMath::Cos(LineupDir), -FMath::Sin(LineupDir), 0.0f);
+	FVector SpawnPos = WorldCenter - ForwardDir * EnemyRowOffset;
+	SpawnPos.Z = WorldCenter.Z + 80.0f;  // Start high
+
+	BonusRevealDice = GetWorld()->SpawnActor<ADice>(ADice::StaticClass(), SpawnPos, FRotator::ZeroRotator, SpawnParams);
+	if (BonusRevealDice)
+	{
+		// Use masked mesh if set, otherwise use enemy mesh
+		UStaticMesh* MeshToUse = MaskedDiceMesh ? MaskedDiceMesh : EnemyDiceMesh;
+		if (MeshToUse)
+		{
+			BonusRevealDice->SetCustomMesh(MeshToUse, CustomMeshScale);
+		}
+		UMaterialInterface* MatToUse = MaskedDiceMaterial ? MaskedDiceMaterial : EnemyDiceMaterial;
+		if (MatToUse)
+		{
+			BonusRevealDice->SetCustomMaterial(MatToUse);
+		}
+		// Show the total number on all faces
+		BonusRevealDice->SetAllFacesText(FString::FromInt(BonusEnemyTotal));
+		BonusRevealDice->SetActorScale3D(FVector(DiceScale));  // Same scale as other dice
+		BonusRevealDice->SetTextColor(bBonusWon ? FColor::Green : FColor::Red);
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("Reveal dice spawned showing: %d"), BonusEnemyTotal);
+}
+
+void ADiceGameManager::UpdateBonusReveal(float DeltaTime)
+{
+	BonusRevealProgress += DeltaTime * 2.0f;
+
+	if (BonusRevealDice)
+	{
+		// Animate reveal dice dropping and scaling
+		FVector WorldCenter = GetLineupWorldCenter();
+		float LineupDir = FMath::DegreesToRadians(LineupYaw);
+		FVector ForwardDir = FVector(FMath::Cos(LineupDir), -FMath::Sin(LineupDir), 0.0f);
+		FVector TargetPos = WorldCenter - ForwardDir * EnemyRowOffset;
+		TargetPos.Z = WorldCenter.Z + DiceLineupHeight + 20.0f;
+
+		FVector StartPos = TargetPos;
+		StartPos.Z += 60.0f;
+
+		float T = FMath::Clamp(BonusRevealProgress, 0.0f, 1.0f);
+		float EasedT = EaseOutElastic(T);
+
+		FVector NewPos = FMath::Lerp(StartPos, TargetPos, FMath::Clamp(T * 1.5f, 0.0f, 1.0f));
+		float ScalePulse = 1.0f + FMath::Sin(BonusRevealProgress * PI * 2.0f) * 0.15f * (1.0f - T);
+		BonusRevealDice->SetActorLocation(NewPos);
+		BonusRevealDice->SetActorScale3D(FVector(DiceScale * ScalePulse));
+	}
+
+	if (BonusRevealProgress >= 1.5f)
+	{
+		ShowBonusResult();
+	}
+}
+
+void ADiceGameManager::ShowBonusResult()
+{
+	BonusPhase = 9;
+	BonusAnimTimer = 0.0f;
+
+	if (bBonusWon)
+	{
+		BonusDiceModifier = 1;
+		UE_LOG(LogTemp, Warning, TEXT("BONUS WIN! +1 dice. Total was %d (%s than 7)"),
+			BonusEnemyTotal, bBonusIsHigher ? TEXT("HIGHER") : TEXT("LOWER"));
+		if (SoundManager) SoundManager->PlayDiceMatch();
+
+		// Pop effect on all dice
+		PlayMatchEffect(BonusRevealDice ? BonusRevealDice->GetActorLocation() : GetLineupWorldCenter());
+	}
+	else
+	{
+		BonusDiceModifier = -1;
+		UE_LOG(LogTemp, Warning, TEXT("BONUS LOSE! -1 dice. Total was %d (%s than 7)"),
+			BonusEnemyTotal, bBonusIsHigher ? TEXT("HIGHER") : TEXT("LOWER"));
+		if (SoundManager) SoundManager->PlayError();
+	}
+
+	// Apply modifier to next round
+	PlayerNumDice = FMath::Max(1, PlayerNumDice + BonusDiceModifier);
+}
+
+void ADiceGameManager::EndBonusRound(bool bWon)
+{
+	// Legacy function - now handled by ShowBonusResult
+	bBonusWon = bWon;
+	ShowBonusResult();
+}
+
+void ADiceGameManager::UpdateBonusRound(float DeltaTime)
+{
+	if (BonusPhase == 0) return;
+
+	BonusAnimTimer += DeltaTime;
+
+	switch (BonusPhase)
+	{
+		case 1:  // Enemy throwing - wait a moment
+			if (BonusAnimTimer > 0.2f)
+			{
+				BonusPhase = 2;  // Enemy settling
+				BonusAnimTimer = 0.0f;
+			}
+			break;
+
+		case 2:  // Enemy dice settling
+			CheckBonusDiceSettled();
+			break;
+
+		case 3:  // Enemy dice lining up
+			LineUpBonusDice(DeltaTime);
+			break;
+
+		case 4:  // Player dice throwing
+			if (BonusAnimTimer > 0.2f)
+			{
+				BonusPhase = 5;  // Player settling
+				BonusAnimTimer = 0.0f;
+			}
+			break;
+
+		case 5:  // Player dice settling
+			CheckBonusPlayerDiceSettled();
+			break;
+
+		case 6:  // Player dice lining up (centering)
+			LineUpBonusPlayerDice(DeltaTime);
+			break;
+
+		case 7:  // Player turn - waiting for drag to modifier
+			// Handled by drag system in OnMouseReleased
+			break;
+
+		case 8:  // Reveal dice animation
+			UpdateBonusReveal(DeltaTime);
+			break;
+
+		case 9:  // Result pop and finish
+			if (BonusAnimTimer > 1.5f)
+			{
+				CleanupBonusRound();
+				BonusPhase = 0;
+				ContinueToNextRound();
+			}
+			break;
+	}
+}
+
+void ADiceGameManager::CleanupBonusRound()
+{
+	// Destroy masked dice
+	for (ADice* Dice : BonusMaskedDice)
+	{
+		if (Dice)
+		{
+			Dice->Destroy();
+		}
+	}
+	BonusMaskedDice.Empty();
+
+	// Destroy player dice
+	if (BonusPlayerDice)
+	{
+		BonusPlayerDice->Destroy();
+		BonusPlayerDice = nullptr;
+	}
+
+	// Destroy reveal dice
+	if (BonusRevealDice)
+	{
+		BonusRevealDice->Destroy();
+		BonusRevealDice = nullptr;
+	}
+
+	// Hide bonus modifiers, restore regular modifiers
+	for (ADiceModifier* Mod : AllModifiers)
+	{
+		if (Mod)
+		{
+			if (Mod->ModifierType == EModifierType::BonusHigher ||
+				Mod->ModifierType == EModifierType::BonusLower)
+			{
+				// Hide bonus modifiers
+				Mod->SetActive(false);
+				Mod->SetHidden(true);
+			}
+			else
+			{
+				// Show regular modifiers again
+				Mod->SetHidden(false);
+			}
+		}
+	}
+
+	BonusDiceStartPositions.Empty();
+	BonusDiceStartRotations.Empty();
+	BonusDiceTargetPositions.Empty();
+	BonusDiceTargetRotations.Empty();
 }

@@ -16,7 +16,9 @@ enum class EModifierType : uint8
 	PlusTwo,
 	Flip,
 	RerollOne,
-	RerollAll
+	RerollAll,
+	BonusHigher,   // Bonus round: guess higher than 7
+	BonusLower     // Bonus round: guess lower than 7
 };
 
 UCLASS()
@@ -57,8 +59,14 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Modifier")
 	bool bIsActive;
 
+	UPROPERTY(BlueprintReadOnly, Category = "Modifier")
+	bool bIsHidden;
+
 	UFUNCTION(BlueprintCallable)
 	void SetActive(bool bActive);
+
+	UFUNCTION(BlueprintCallable)
+	void SetHidden(bool bHide);
 
 	UFUNCTION(BlueprintCallable)
 	void SetHighlighted(bool bHighlight);

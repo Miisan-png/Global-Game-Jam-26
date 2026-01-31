@@ -38,6 +38,7 @@ ADice::ADice()
 	CurrentValue = 0;
 	HighlightPulse = 0.0f;
 	TextColor = FColor::White;
+	MeshNormalizeScale = 1.0f;
 
 	SetupFaceTexts();
 }
@@ -56,19 +57,20 @@ void ADice::Tick(float DeltaTime)
 		DrawFaceNumbers();
 	}
 
+	float BaseScale = DiceSize * MeshNormalizeScale;
 	if (bIsHighlighted)
 	{
 		HighlightPulse += DeltaTime * 6.0f;
-		float Scale = DiceSize * (1.0f + FMath::Sin(HighlightPulse) * 0.1f);
+		float Scale = BaseScale * (1.0f + FMath::Sin(HighlightPulse) * 0.1f);
 		Mesh->SetWorldScale3D(FVector(Scale));
 	}
 	else if (bIsMatched)
 	{
-		Mesh->SetWorldScale3D(FVector(DiceSize * 0.8f));
+		Mesh->SetWorldScale3D(FVector(BaseScale * 0.8f));
 	}
 	else
 	{
-		Mesh->SetWorldScale3D(FVector(DiceSize));
+		Mesh->SetWorldScale3D(FVector(BaseScale));
 	}
 }
 
@@ -251,11 +253,12 @@ int32 ADice::GetFaceValueFromDirection(FVector LocalDirection)
 	return BestFace;
 }
 
-void ADice::SetCustomMesh(UStaticMesh* NewMesh)
+void ADice::SetCustomMesh(UStaticMesh* NewMesh, float MeshScale)
 {
 	if (NewMesh && Mesh)
 	{
 		Mesh->SetStaticMesh(NewMesh);
+		MeshNormalizeScale = MeshScale;
 	}
 }
 

@@ -77,6 +77,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Scale for dice (1.0 = native mesh size)"))
 	float DiceScale;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Extra scale for custom mesh (adjust if your mesh is too big/small)"))
+	float CustomMeshScale;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Show 3D text numbers on dice faces (disable if mesh has baked numbers)"))
 	bool bShowDiceNumbers;
 

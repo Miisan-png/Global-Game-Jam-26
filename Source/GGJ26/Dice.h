@@ -49,7 +49,7 @@ public:
 	void SetMatched(bool bMatch);
 
 	UFUNCTION(BlueprintCallable)
-	void SetCustomMesh(UStaticMesh* NewMesh);
+	void SetCustomMesh(UStaticMesh* NewMesh, float MeshScale = 1.0f);
 
 	UFUNCTION(BlueprintCallable)
 	void SetCustomMaterial(UMaterialInterface* NewMaterial);
@@ -83,6 +83,7 @@ public:
 
 private:
 	float HighlightPulse;
+	float MeshNormalizeScale;  // Scale factor to normalize custom mesh to default cube size
 
 	void SetupFaceTexts();
 	void DrawFaceNumbers();

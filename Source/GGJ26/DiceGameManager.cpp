@@ -27,6 +27,7 @@ ADiceGameManager::ADiceGameManager()
 	EnemyTextColor = FColor::White;
 	bPlayerDiceGlow = true;
 	DiceScale = 0.15f;
+	CustomMeshScale = 1.0f;
 	bShowDiceNumbers = true;
 
 	// Lineup - centered at origin
@@ -327,10 +328,11 @@ void ADiceGameManager::EnemyThrowDice()
 			NewDice->bShowDebugNumbers = bShowDebugGizmos;
 			NewDice->DiceSize = DiceScale;
 
-			// Apply enemy dice visuals
-			if (EnemyDiceMesh)
+			// Apply enemy dice visuals (use PlayerDiceMesh if no EnemyDiceMesh set)
+			UStaticMesh* MeshToUse = EnemyDiceMesh ? EnemyDiceMesh : PlayerDiceMesh;
+			if (MeshToUse)
 			{
-				NewDice->SetCustomMesh(EnemyDiceMesh);
+				NewDice->SetCustomMesh(MeshToUse, CustomMeshScale);
 			}
 			if (EnemyDiceMaterial)
 			{
@@ -339,7 +341,7 @@ void ADiceGameManager::EnemyThrowDice()
 			NewDice->SetTextColor(EnemyTextColor);
 			NewDice->SetFaceNumbersVisible(bShowDiceNumbers);
 			NewDice->DiceSize = DiceScale;
-			NewDice->Mesh->SetWorldScale3D(FVector(DiceScale));
+			// Scale is handled in Dice::Tick with MeshNormalizeScale
 
 			FVector ThrowDirection = (ThrowTarget - SpawnLocation).GetSafeNormal();
 			ThrowDirection += FVector(
@@ -429,8 +431,8 @@ void ADiceGameManager::PrepareEnemyDiceLineup()
 
 		int32 FaceValue = D->GetResult();
 		FRotator TargetRot = GetRotationForFaceUp(FaceValue);
-		// Rotate 180 so text faces toward camera
-		TargetRot.Yaw = LineupYaw;
+		// Add lineup yaw to existing rotation (don't overwrite)
+		TargetRot.Yaw += LineupYaw;
 		EnemyDiceTargetRotations.Add(TargetRot);
 
 		D->Mesh->SetSimulatePhysics(false);
@@ -541,7 +543,7 @@ void ADiceGameManager::PlayerThrowDice()
 			// Apply player dice visuals
 			if (PlayerDiceMesh)
 			{
-				NewDice->SetCustomMesh(PlayerDiceMesh);
+				NewDice->SetCustomMesh(PlayerDiceMesh, CustomMeshScale);
 			}
 			if (PlayerDiceMaterial)
 			{
@@ -551,7 +553,7 @@ void ADiceGameManager::PlayerThrowDice()
 			NewDice->SetGlowEnabled(bPlayerDiceGlow);
 			NewDice->SetFaceNumbersVisible(bShowDiceNumbers);
 			NewDice->DiceSize = DiceScale;
-			NewDice->Mesh->SetWorldScale3D(FVector(DiceScale));
+			// Scale is handled in Dice::Tick with MeshNormalizeScale
 
 			FVector ThrowDirection = CamForward + FVector(0, 0, 0.1f);
 			ThrowDirection += FVector(
@@ -678,7 +680,8 @@ void ADiceGameManager::PreparePlayerDiceLineup()
 
 			int32 FaceValue = D->GetResult();
 			FRotator TargetRot = GetRotationForFaceUp(FaceValue);
-			TargetRot.Yaw = LineupYaw;
+			// Add lineup yaw to existing rotation (don't overwrite)
+			TargetRot.Yaw += LineupYaw;
 			PlayerDiceTargetRotations.Add(TargetRot);
 		}
 
@@ -860,7 +863,7 @@ void ADiceGameManager::UpdateDiceFaceDisplay(ADice* Dice, int32 NewValue)
 
 	// Rotate the dice to show the new value facing up
 	FRotator NewRot = GetRotationForFaceUp(NewValue);
-	NewRot.Yaw = LineupYaw;
+	NewRot.Yaw += LineupYaw;
 	Dice->SetActorRotation(NewRot);
 }
 
@@ -882,7 +885,7 @@ void ADiceGameManager::SnapDiceToModifier(int32 DiceIndex, ADiceModifier* Modifi
 	// Target position is above the modifier
 	ReturnTargetPos = Modifier->GetActorLocation() + FVector(0, 0, 20.0f);
 	ReturnTargetRot = GetRotationForFaceUp(PlayerResults[DiceIndex]);
-	ReturnTargetRot.Yaw = LineupYaw;
+	ReturnTargetRot.Yaw += LineupYaw;
 }
 
 void ADiceGameManager::UpdateModifierSnap(float DeltaTime)
@@ -1134,26 +1137,12 @@ void ADiceGameManager::DrawHealthBars()
 
 FRotator ADiceGameManager::GetRotationForFaceUp(int32 FaceValue)
 {
-	// Calculate rotation to make face N point upward
-	// Face normals (from Dice.cpp):
-	// Face 1: +Z (already up)
-	// Face 2: +X
-	// Face 3: +Y
-	// Face 4: -Y
-	// Face 5: -X
-	// Face 6: -Z
-
-	// Rotations to make each face point UP (Pitch, Yaw, Roll)
-	switch (FaceValue)
+	// Use the FaceRotations array (same one used by F mode tool)
+	if (FaceValue >= 1 && FaceValue <= 6)
 	{
-		case 1: return FRotator(0, 0, 0);       // +Z is already up
-		case 2: return FRotator(0, 0, -90);     // Rotate to make +X point up
-		case 3: return FRotator(-90, 0, 0);     // Rotate to make +Y point up
-		case 4: return FRotator(90, 0, 0);      // Rotate to make -Y point up
-		case 5: return FRotator(0, 0, 90);      // Rotate to make -X point up
-		case 6: return FRotator(180, 0, 0);     // Rotate to make -Z point up
-		default: return FRotator(0, 0, 0);
+		return FaceRotations[FaceValue];
 	}
+	return FRotator(0, 0, 0);
 }
 
 AMaskEnemy* ADiceGameManager::FindEnemy()
@@ -1826,8 +1815,8 @@ void ADiceGameManager::SpawnTestDice()
 	{
 		TestDice->Mesh->SetSimulatePhysics(false);
 		TestDice->DiceSize = DiceScale * 2.0f; // Make it bigger for visibility
-		TestDice->Mesh->SetWorldScale3D(FVector(DiceScale * 2.0f));
 		TestDice->bShowDebugNumbers = true;
+		// Scale is handled in Dice::Tick with MeshNormalizeScale
 	}
 }
 
@@ -1836,6 +1825,7 @@ void ADiceGameManager::UpdateTestDice()
 	if (!TestDice) return;
 
 	FRotator Rot = FaceRotations[CurrentFaceEdit];
+	// Add lineup yaw to match how gameplay applies it
 	Rot.Yaw += LineupYaw;
 	TestDice->SetActorRotation(Rot);
 	TestDice->SetActorLocation(GetLineupWorldCenter() + FVector(0, 0, 50.0f));

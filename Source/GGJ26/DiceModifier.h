@@ -52,6 +52,9 @@ public:
 	bool bIsHighlighted;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Modifier")
+	bool bIsInvalid;  // Can't be used with current dice value
+
+	UPROPERTY(BlueprintReadOnly, Category = "Modifier")
 	bool bIsActive;
 
 	UFUNCTION(BlueprintCallable)
@@ -59,6 +62,12 @@ public:
 
 	UFUNCTION(BlueprintCallable)
 	void SetHighlighted(bool bHighlight);
+
+	UFUNCTION(BlueprintCallable)
+	void SetInvalid(bool bInvalid);
+
+	UFUNCTION(BlueprintCallable)
+	bool CanApplyToValue(int32 Value);
 
 	UFUNCTION(BlueprintCallable)
 	void UseModifier();

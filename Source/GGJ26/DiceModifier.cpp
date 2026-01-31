@@ -39,6 +39,7 @@ ADiceModifier::ADiceModifier()
 	ModifierType = EModifierType::PlusOne;
 	bIsUsed = false;
 	bIsHighlighted = false;
+	bIsInvalid = false;
 	bIsActive = false;
 
 	BaseColor = FLinearColor(0.2f, 0.2f, 0.3f, 1.0f);
@@ -106,14 +107,39 @@ void ADiceModifier::SetHighlighted(bool bHighlight)
 	if (bIsUsed || !bIsActive) return;
 
 	bIsHighlighted = bHighlight;
-
-	// Reset hover animation when unhighlighting
-	if (!bHighlight && HoverProgress > 0.0f)
+	if (!bHighlight)
 	{
-		// Let Tick handle smooth return
+		bIsInvalid = false;  // Reset invalid state when not highlighted
 	}
 
 	UpdateVisuals();
+}
+
+void ADiceModifier::SetInvalid(bool bInvalid)
+{
+	if (bIsUsed || !bIsActive) return;
+
+	bIsInvalid = bInvalid;
+	UpdateVisuals();
+}
+
+bool ADiceModifier::CanApplyToValue(int32 Value)
+{
+	switch (ModifierType)
+	{
+		case EModifierType::MinusOne:
+			return Value > 1;  // Can't go below 1
+		case EModifierType::PlusOne:
+			return Value < 6;  // Can't go above 6
+		case EModifierType::PlusTwo:
+			return Value < 6;  // 6 can't use, but 5+2=6 is still useful
+		case EModifierType::Flip:
+		case EModifierType::RerollOne:
+		case EModifierType::RerollAll:
+			return true;  // Always valid
+		default:
+			return true;
+	}
 }
 
 void ADiceModifier::SetActive(bool bActive)
@@ -202,6 +228,11 @@ void ADiceModifier::UpdateVisuals()
 	{
 		float Grey = 80;
 		ModifierText->SetTextRenderColor(FColor(Grey, Grey, Grey, 255));
+	}
+	else if (bIsInvalid)
+	{
+		// Dark red for invalid (can't use with current dice value)
+		ModifierText->SetTextRenderColor(FColor(180, 50, 50, 255));
 	}
 	else if (bIsHighlighted)
 	{

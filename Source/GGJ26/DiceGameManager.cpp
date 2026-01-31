@@ -1651,9 +1651,15 @@ void ADiceGameManager::OnMouseReleased()
 
 		if (ClosestMod)
 		{
-			TryApplyModifier(ClosestMod, DraggedDiceIndex);
-			bAppliedModifier = true;
-			bSuccess = true;
+			// Check if modifier can actually be applied to this dice value
+			int32 DiceValue = PlayerResults[DraggedDiceIndex];
+			if (ClosestMod->CanApplyToValue(DiceValue))
+			{
+				TryApplyModifier(ClosestMod, DraggedDiceIndex);
+				bAppliedModifier = true;
+				bSuccess = true;
+			}
+			// If can't apply, bSuccess stays false and dice will bounce back
 		}
 	}
 
@@ -1997,13 +2003,30 @@ void ADiceGameManager::HighlightValidTargets()
 		}
 	}
 
-	// Only highlight modifiers if this dice hasn't been modified yet
+	// Highlight modifiers - green if valid, red if invalid for this dice value
 	bool bCanUseModifiers = !PlayerDiceModified[DraggedDiceIndex];
 	for (ADiceModifier* Mod : AllModifiers)
 	{
 		if (Mod && !Mod->bIsUsed && Mod->bIsActive)
 		{
-			Mod->SetHighlighted(bCanUseModifiers);
+			if (!bCanUseModifiers)
+			{
+				// Already used a modifier on this dice
+				Mod->SetHighlighted(false);
+				Mod->SetInvalid(false);
+			}
+			else if (!Mod->CanApplyToValue(DraggedValue))
+			{
+				// Can't apply this modifier to current value (e.g., +1 on 6)
+				Mod->SetHighlighted(false);
+				Mod->SetInvalid(true);
+			}
+			else
+			{
+				// Valid modifier for this dice
+				Mod->SetHighlighted(true);
+				Mod->SetInvalid(false);
+			}
 		}
 	}
 }
@@ -2020,7 +2043,11 @@ void ADiceGameManager::ClearAllHighlights()
 	}
 	for (ADiceModifier* Mod : AllModifiers)
 	{
-		if (Mod) Mod->SetHighlighted(false);
+		if (Mod)
+		{
+			Mod->SetHighlighted(false);
+			Mod->SetInvalid(false);
+		}
 	}
 }
 

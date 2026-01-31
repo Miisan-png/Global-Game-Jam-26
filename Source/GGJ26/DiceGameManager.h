@@ -8,6 +8,7 @@
 
 class AMaskEnemy;
 class ADiceCamera;
+class UPlayerHandComponent;
 
 UENUM(BlueprintType)
 enum class EGamePhase : uint8
@@ -83,6 +84,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Show 3D text numbers on dice faces (disable if mesh has baked numbers)"))
 	bool bShowDiceNumbers;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Size of face number text"))
+	float DiceTextSize;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dice Visuals", meta = (ToolTip = "Distance of text from dice center (increase for larger meshes)"))
+	float DiceTextOffset;
+
 	// ===== LINEUP =====
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lineup", meta = (ToolTip = "Center point for dice lineup. If TableActor is set, this is offset from table."))
 	FVector LineupCenter;
@@ -145,6 +152,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Health")
 	int32 MaxHealth;
 
+	// ===== HANDS =====
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hands")
+	AActor* PlayerHandActor;  // Actor with PlayerHandComponent
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hands")
+	AActor* EnemyHandActor;  // Actor with PlayerHandComponent (bIsPlayerHand = false)
+
 	// ===== STATE (Read Only) =====
 	UPROPERTY(BlueprintReadOnly, Category = "State")
 	EGamePhase CurrentPhase;
@@ -180,6 +194,7 @@ private:
 	void SetupInputBindings();
 	void OnStartGamePressed();
 	void OnPlayerThrowPressed();
+	void OnPlayerActionPressed();  // E key - unified action
 	void OnToggleDebugPressed();
 	void OnToggleFaceRotationMode();
 	void OnSelectNext();
@@ -219,6 +234,8 @@ private:
 
 	void FindAllModifiers();
 	void ClearAllDice();
+	void StartDiceDisperse();
+	void UpdateDiceDisperse(float DeltaTime);
 	void DrawTurnText();
 	void DrawHealthBars();
 
@@ -329,6 +346,26 @@ private:
 	void ResetModifiersForNewRound();
 	void StartModifierShuffle();
 	void UpdateModifierShuffle(float DeltaTime);
+
+	// Hand chop integration
+	void TriggerPlayerChop();
+	void TriggerEnemyChop();
+	UFUNCTION()
+	void OnPlayerChopComplete();
+	UFUNCTION()
+	void OnEnemyChopComplete();
+	UPlayerHandComponent* GetPlayerHand();
+	UPlayerHandComponent* GetEnemyHand();
+	bool bWaitingForChop;
+	bool bWaitingForCameraThenEnemyChop;  // Wait for camera pan to finish before enemy chop
+
+	// Dice disperse animation
+	bool bDiceDispersing;
+	float DiceDisperseProgress;
+	TArray<ADice*> DispersingDice;
+	TArray<FVector> DisperseStartPositions;
+	TArray<FVector> DisperseVelocities;
+	TArray<float> DisperseStartScales;
 
 	void StartCameraPan();
 	void UpdateCameraPan(float DeltaTime);

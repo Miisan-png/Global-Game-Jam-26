@@ -44,6 +44,10 @@ ADice::ADice()
 	BaseHighlightRot = FRotator::ZeroRotator;
 	BaseHighlightPos = FVector::ZeroVector;
 
+	// Text defaults
+	FaceTextSize = 50.0f;
+	FaceTextOffset = 51.0f;
+
 	SetupFaceTexts();
 }
 
@@ -230,23 +234,20 @@ FVector ADice::GetFaceCenter(int32 FaceIndex)
 
 void ADice::SetupFaceTexts()
 {
-	// Offset from center - will be scaled with mesh
-	float Offset = 51.0f;
-
 	for (int32 i = 1; i <= 6; i++)
 	{
 		FString CompName = FString::Printf(TEXT("FaceText_%d"), i);
 		UTextRenderComponent* TextComp = CreateDefaultSubobject<UTextRenderComponent>(*CompName);
 		TextComp->SetupAttachment(Mesh);
 
-		FVector LocalPos = GetFaceNormal(i) * Offset;
+		FVector LocalPos = GetFaceNormal(i) * FaceTextOffset;
 		TextComp->SetRelativeLocation(LocalPos);
 		TextComp->SetRelativeRotation(GetFaceTextRotation(i));
 
 		TextComp->SetText(FText::FromString(FString::FromInt(i)));
 		TextComp->SetHorizontalAlignment(EHTA_Center);
 		TextComp->SetVerticalAlignment(EVRTA_TextCenter);
-		TextComp->SetWorldSize(50.0f);
+		TextComp->SetWorldSize(FaceTextSize);
 		TextComp->SetTextRenderColor(FColor::White);
 
 		FaceTexts.Add(TextComp);
@@ -364,6 +365,27 @@ void ADice::SetFaceNumbersVisible(bool bVisible)
 		if (TextComp)
 		{
 			TextComp->SetVisibility(bVisible);
+		}
+	}
+}
+
+void ADice::SetTextSettings(float Size, float Offset)
+{
+	FaceTextSize = Size;
+	FaceTextOffset = Offset;
+
+	// Update existing text components
+	for (int32 i = 0; i < FaceTexts.Num(); i++)
+	{
+		UTextRenderComponent* TextComp = FaceTexts[i];
+		if (TextComp)
+		{
+			// Update position based on new offset
+			FVector LocalPos = GetFaceNormal(i + 1) * FaceTextOffset;
+			TextComp->SetRelativeLocation(LocalPos);
+
+			// Update size
+			TextComp->SetWorldSize(FaceTextSize);
 		}
 	}
 }

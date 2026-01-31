@@ -1,6 +1,7 @@
 #include "DiceGameManager.h"
 #include "MaskEnemy.h"
 #include "DiceCamera.h"
+#include "PlayerHandComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/PlayerController.h"
@@ -30,6 +31,8 @@ ADiceGameManager::ADiceGameManager()
 	DiceScale = 0.15f;
 	CustomMeshScale = 1.0f;
 	bShowDiceNumbers = true;
+	DiceTextSize = 50.0f;
+	DiceTextOffset = 51.0f;
 
 	// Lineup - centered at origin
 	LineupCenter = FVector(0.0f, 0.0f, 0.0f);
@@ -142,6 +145,16 @@ ADiceGameManager::ADiceGameManager()
 	FadingModifier = nullptr;
 	FadingModifierAlpha = 1.0f;
 	CurrentRound = 0;
+
+	// Hands
+	PlayerHandActor = nullptr;
+	EnemyHandActor = nullptr;
+	bWaitingForChop = false;
+	bWaitingForCameraThenEnemyChop = false;
+
+	// Dice disperse
+	bDiceDispersing = false;
+	DiceDisperseProgress = 0.0f;
 }
 
 void ADiceGameManager::BeginPlay()
@@ -157,6 +170,18 @@ void ADiceGameManager::BeginPlay()
 		OriginalCameraLocation = Cam->GetActorLocation();
 		OriginalCameraRotation = Cam->GetActorRotation();
 	}
+
+	// Bind to hand chop events
+	UPlayerHandComponent* PlayerHand = GetPlayerHand();
+	if (PlayerHand)
+	{
+		PlayerHand->OnChopComplete.AddDynamic(this, &ADiceGameManager::OnPlayerChopComplete);
+	}
+	UPlayerHandComponent* EnemyHand = GetEnemyHand();
+	if (EnemyHand)
+	{
+		EnemyHand->OnChopComplete.AddDynamic(this, &ADiceGameManager::OnEnemyChopComplete);
+	}
 }
 
 void ADiceGameManager::SetupInputBindings()
@@ -167,8 +192,9 @@ void ADiceGameManager::SetupInputBindings()
 		EnableInput(PC);
 		if (InputComponent)
 		{
-			InputComponent->BindKey(EKeys::G, IE_Pressed, this, &ADiceGameManager::OnStartGamePressed);
-			InputComponent->BindKey(EKeys::E, IE_Pressed, this, &ADiceGameManager::OnPlayerThrowPressed);
+			// E is now the main action key - starts game, throws dice, continues
+			InputComponent->BindKey(EKeys::E, IE_Pressed, this, &ADiceGameManager::OnPlayerActionPressed);
+			InputComponent->BindKey(EKeys::G, IE_Pressed, this, &ADiceGameManager::OnStartGamePressed);  // Keep G as backup
 			InputComponent->BindKey(EKeys::T, IE_Pressed, this, &ADiceGameManager::OnToggleDebugPressed);
 			InputComponent->BindKey(EKeys::F, IE_Pressed, this, &ADiceGameManager::OnToggleFaceRotationMode);
 			InputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ADiceGameManager::OnMousePressed);
@@ -215,6 +241,9 @@ void ADiceGameManager::Tick(float DeltaTime)
 
 	// Always update camera pan (so it works during all phases)
 	UpdateCameraPan(DeltaTime);
+
+	// Update dice disperse animation
+	UpdateDiceDisperse(DeltaTime);
 
 	switch (CurrentPhase)
 	{
@@ -299,6 +328,49 @@ void ADiceGameManager::OnPlayerThrowPressed()
 	if (CurrentPhase == EGamePhase::PlayerTurn)
 	{
 		PlayerThrowDice();
+	}
+}
+
+void ADiceGameManager::OnPlayerActionPressed()
+{
+	// E key does different things based on game state
+	if (bWaitingForChop)
+	{
+		// Don't allow actions while waiting for chop animation
+		return;
+	}
+
+	if (CurrentPhase == EGamePhase::Idle)
+	{
+		// Start the game
+		StartGame();
+	}
+	else if (CurrentPhase == EGamePhase::PlayerTurn)
+	{
+		// Throw player dice
+		PlayerThrowDice();
+	}
+	else if (CurrentPhase == EGamePhase::RoundEnd)
+	{
+		// Continue to next round
+		CurrentRound++;
+		ContinueToNextRound();
+	}
+	else if (CurrentPhase == EGamePhase::GameOver)
+	{
+		// Restart game
+		PlayerHealth = MaxHealth;
+		EnemyHealth = MaxHealth;
+		PermanentlyRemovedModifiers.Empty();
+		for (ADiceModifier* Mod : AllModifiers)
+		{
+			if (Mod)
+			{
+				Mod->bIsUsed = false;
+				Mod->ModifierText->SetVisibility(true);
+			}
+		}
+		StartGame();
 	}
 }
 
@@ -437,6 +509,7 @@ void ADiceGameManager::EnemyThrowDice()
 			}
 			NewDice->SetTextColor(EnemyTextColor);
 			NewDice->SetFaceNumbersVisible(bShowDiceNumbers);
+			NewDice->SetTextSettings(DiceTextSize, DiceTextOffset);
 			NewDice->DiceSize = DiceScale;
 			// Scale is handled in Dice::Tick with MeshNormalizeScale
 
@@ -649,6 +722,7 @@ void ADiceGameManager::PlayerThrowDice()
 			NewDice->SetTextColor(PlayerTextColor);
 			NewDice->SetGlowEnabled(bPlayerDiceGlow);
 			NewDice->SetFaceNumbersVisible(bShowDiceNumbers);
+			NewDice->SetTextSettings(DiceTextSize, DiceTextOffset);
 			NewDice->DiceSize = DiceScale;
 			// Scale is handled in Dice::Tick with MeshNormalizeScale
 
@@ -973,6 +1047,20 @@ void ADiceGameManager::UpdateMatchAnimation(float DeltaTime)
 		PlayerD->Mesh->SetWorldScale3D(FVector(PlayerD->DiceSize * PlayerD->MeshNormalizeScale));
 		EnemyD->Mesh->SetWorldScale3D(FVector(EnemyD->DiceSize * EnemyD->MeshNormalizeScale));
 
+		// Juice: Small camera shake on match
+		APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+		if (PC)
+		{
+			PC->ClientStartCameraShake(nullptr, 0.3f);  // Use built-in if available
+			// Or manual shake via rotation
+			FRotator Shake = FRotator(
+				FMath::RandRange(-0.5f, 0.5f),
+				FMath::RandRange(-0.5f, 0.5f),
+				0
+			);
+			PC->SetControlRotation(PC->GetControlRotation() + Shake);
+		}
+
 		bMatchAnimating = false;
 		MatchPlayerIndex = -1;
 		MatchEnemyIndex = -1;
@@ -986,7 +1074,7 @@ void ADiceGameManager::TryApplyModifier(ADiceModifier* Modifier, int32 DiceIndex
 	if (!Modifier || Modifier->bIsUsed) return;
 	if (!PlayerDice.IsValidIndex(DiceIndex)) return;
 	if (PlayerDiceMatched[DiceIndex]) return;
-	if (PlayerDiceModified[DiceIndex]) return;  // Already used a modifier
+	// REMOVED: PlayerDiceModified check - allow modifier combos!
 
 	int32 OldValue = PlayerResults[DiceIndex];
 	int32 NewValue = Modifier->ApplyToValue(OldValue);
@@ -1396,16 +1484,24 @@ void ADiceGameManager::CheckAllMatched()
 
 	if (MatchCount >= EnemyDice.Num())
 	{
-		DealDamage(true);
-		CheckGameOver();
-
 		DeactivateModifiers();
 		ResetCamera();
 
-		if (CurrentPhase != EGamePhase::GameOver)
-		{
-			CurrentPhase = EGamePhase::RoundEnd;
-		}
+		// Clear dice
+		ClearAllDice();
+
+		EnemyResults.Empty();
+		PlayerResults.Empty();
+		PlayerDiceMatched.Empty();
+		EnemyDiceMatched.Empty();
+		PlayerDiceModified.Empty();
+		PlayerDiceAtModifier.Empty();
+		WaitTimer = 0.0f;
+		SelectionMode = 0;
+		SelectedDiceIndex = -1;
+
+		// Wait for camera to finish panning, then chop enemy finger
+		bWaitingForCameraThenEnemyChop = true;
 	}
 }
 
@@ -1427,17 +1523,131 @@ void ADiceGameManager::CheckGameOver()
 
 void ADiceGameManager::ClearAllDice()
 {
+	// Start disperse animation instead of immediate destroy
+	StartDiceDisperse();
+}
+
+void ADiceGameManager::StartDiceDisperse()
+{
+	DispersingDice.Empty();
+	DisperseStartPositions.Empty();
+	DisperseVelocities.Empty();
+	DisperseStartScales.Empty();
+
+	// Gather all dice for dispersing
+	FVector Center = GetLineupWorldCenter();
+
 	for (ADice* D : EnemyDice)
 	{
-		if (D && IsValid(D)) D->Destroy();
+		if (D && IsValid(D))
+		{
+			DispersingDice.Add(D);
+			DisperseStartPositions.Add(D->GetActorLocation());
+			DisperseStartScales.Add(D->DiceSize * D->MeshNormalizeScale);
+
+			// Random outward velocity with upward arc
+			FVector ToCenter = (D->GetActorLocation() - Center).GetSafeNormal();
+			FVector Velocity = ToCenter * FMath::RandRange(150.0f, 300.0f);
+			Velocity.Z = FMath::RandRange(100.0f, 200.0f);
+			Velocity += FVector(FMath::RandRange(-50.0f, 50.0f), FMath::RandRange(-50.0f, 50.0f), 0);
+			DisperseVelocities.Add(Velocity);
+
+			// Disable physics so we control the animation
+			D->Mesh->SetSimulatePhysics(false);
+		}
 	}
-	EnemyDice.Empty();
 
 	for (ADice* D : PlayerDice)
 	{
-		if (D && IsValid(D)) D->Destroy();
+		if (D && IsValid(D))
+		{
+			DispersingDice.Add(D);
+			DisperseStartPositions.Add(D->GetActorLocation());
+			DisperseStartScales.Add(D->DiceSize * D->MeshNormalizeScale);
+
+			// Random outward velocity with upward arc
+			FVector ToCenter = (D->GetActorLocation() - Center).GetSafeNormal();
+			FVector Velocity = ToCenter * FMath::RandRange(150.0f, 300.0f);
+			Velocity.Z = FMath::RandRange(100.0f, 200.0f);
+			Velocity += FVector(FMath::RandRange(-50.0f, 50.0f), FMath::RandRange(-50.0f, 50.0f), 0);
+			DisperseVelocities.Add(Velocity);
+
+			// Disable physics so we control the animation
+			D->Mesh->SetSimulatePhysics(false);
+		}
 	}
+
+	EnemyDice.Empty();
 	PlayerDice.Empty();
+
+	if (DispersingDice.Num() > 0)
+	{
+		bDiceDispersing = true;
+		DiceDisperseProgress = 0.0f;
+	}
+}
+
+void ADiceGameManager::UpdateDiceDisperse(float DeltaTime)
+{
+	if (!bDiceDispersing) return;
+
+	DiceDisperseProgress += DeltaTime * 2.0f;  // Animation speed
+	float Alpha = FMath::Clamp(DiceDisperseProgress, 0.0f, 1.0f);
+
+	// Ease out for smooth deceleration
+	float EasedAlpha = 1.0f - FMath::Pow(1.0f - Alpha, 2.0f);
+
+	for (int32 i = 0; i < DispersingDice.Num(); i++)
+	{
+		ADice* D = DispersingDice[i];
+		if (!D || !IsValid(D)) continue;
+
+		// Move along velocity with gravity
+		FVector NewPos = DisperseStartPositions[i] + DisperseVelocities[i] * EasedAlpha;
+		// Add gravity curve
+		NewPos.Z -= 100.0f * Alpha * Alpha;
+		D->SetActorLocation(NewPos);
+
+		// Spin wildly
+		FRotator CurrentRot = D->GetActorRotation();
+		float SpinSpeed = (1.0f - Alpha) * 500.0f;  // Slow down over time
+		CurrentRot.Pitch += DeltaTime * SpinSpeed * (i % 2 == 0 ? 1.0f : -1.0f);
+		CurrentRot.Yaw += DeltaTime * SpinSpeed * 0.7f;
+		CurrentRot.Roll += DeltaTime * SpinSpeed * 1.3f;
+		D->SetActorRotation(CurrentRot);
+
+		// Shrink and fade
+		float Scale = DisperseStartScales[i] * (1.0f - Alpha * 0.8f);  // Shrink to 20%
+		D->Mesh->SetWorldScale3D(FVector(Scale));
+
+		// Fade out text
+		for (UTextRenderComponent* Text : D->FaceTexts)
+		{
+			if (Text)
+			{
+				FColor TextColor = D->TextColor;
+				TextColor.A = FMath::Clamp(int32(255 * (1.0f - Alpha)), 0, 255);
+				Text->SetTextRenderColor(TextColor);
+			}
+		}
+	}
+
+	// When animation complete, destroy all
+	if (DiceDisperseProgress >= 1.0f)
+	{
+		for (ADice* D : DispersingDice)
+		{
+			if (D && IsValid(D))
+			{
+				D->Destroy();
+			}
+		}
+		DispersingDice.Empty();
+		DisperseStartPositions.Empty();
+		DisperseVelocities.Empty();
+		DisperseStartScales.Empty();
+		bDiceDispersing = false;
+	}
 }
 
 void ADiceGameManager::DrawTurnText()
@@ -1630,8 +1840,8 @@ void ADiceGameManager::OnMouseReleased()
 		bSuccess = PlayerDiceMatched[DraggedDiceIndex] || bMatchAnimating;
 	}
 
-	// Check modifiers only if not matching enemy dice
-	if (!bSuccess && !PlayerDiceModified[DraggedDiceIndex])
+	// Check modifiers only if not matching enemy dice (combos allowed!)
+	if (!bSuccess)
 	{
 		float ClosestModDist = 70.0f;
 		ADiceModifier* ClosestMod = nullptr;
@@ -2004,18 +2214,12 @@ void ADiceGameManager::HighlightValidTargets()
 	}
 
 	// Highlight modifiers - green if valid, red if invalid for this dice value
-	bool bCanUseModifiers = !PlayerDiceModified[DraggedDiceIndex];
+	// Combos allowed! Dice can use multiple modifiers
 	for (ADiceModifier* Mod : AllModifiers)
 	{
 		if (Mod && !Mod->bIsUsed && Mod->bIsActive)
 		{
-			if (!bCanUseModifiers)
-			{
-				// Already used a modifier on this dice
-				Mod->SetHighlighted(false);
-				Mod->SetInvalid(false);
-			}
-			else if (!Mod->CanApplyToValue(DraggedValue))
+			if (!Mod->CanApplyToValue(DraggedValue))
 			{
 				// Can't apply this modifier to current value (e.g., +1 on 6)
 				Mod->SetHighlighted(false);
@@ -2146,6 +2350,13 @@ void ADiceGameManager::UpdateCameraPan(float DeltaTime)
 	if (CameraPanProgress >= 2.0f)
 	{
 		bCameraPanning = false;
+
+		// If we were waiting for camera to finish before enemy chop, do it now
+		if (bWaitingForCameraThenEnemyChop)
+		{
+			bWaitingForCameraThenEnemyChop = false;
+			TriggerEnemyChop();
+		}
 	}
 }
 
@@ -2396,7 +2607,7 @@ bool ADiceGameManager::CanStillMatch()
 		if (PlayerDiceMatched[p]) continue;  // Already matched
 
 		int32 PlayerVal = PlayerResults[p];
-		bool bCanUseModifiers = !PlayerDiceModified[p];  // Can only use modifier if not already modified
+		// Combos allowed! Always consider modifiers
 
 		// Check for direct match with any unmatched enemy dice
 		for (int32 e = 0; e < EnemyDice.Num(); e++)
@@ -2408,8 +2619,7 @@ bool ADiceGameManager::CanStillMatch()
 			}
 		}
 
-		// If dice can use modifiers, check if any modifier could create a match
-		if (bCanUseModifiers)
+		// Check if any modifier could create a match (combos allowed!)
 		{
 			for (ADiceModifier* Mod : AvailableModifiers)
 			{
@@ -2440,24 +2650,11 @@ bool ADiceGameManager::CanStillMatch()
 
 void ADiceGameManager::GiveUpRound()
 {
-	// Player takes 1 damage
-	DealDamage(false);
-
 	// Deactivate modifiers and reset camera
 	DeactivateModifiers();
 	ResetCamera();
 
-	// Check for game over
-	if (PlayerHealth <= 0)
-	{
-		CurrentPhase = EGamePhase::GameOver;
-		return;
-	}
-
-	// Increment round counter
-	CurrentRound++;
-
-	// Start new round - clear all dice and restart
+	// Clear all dice immediately
 	ClearAllDice();
 
 	EnemyResults.Empty();
@@ -2470,9 +2667,8 @@ void ADiceGameManager::GiveUpRound()
 	SelectionMode = 0;
 	SelectedDiceIndex = -1;
 
-	// Enemy throws new dice
-	CurrentPhase = EGamePhase::EnemyThrowing;
-	EnemyThrowDice();
+	// Trigger finger chop - the callback will continue the flow
+	TriggerPlayerChop();
 }
 
 void ADiceGameManager::ContinueToNextRound()
@@ -2752,4 +2948,104 @@ void ADiceGameManager::UpdateFaceRotationMode()
 			FString::Printf(TEXT("%sFace %d: (%.0f, %.0f, %.0f)"),
 				*Marker, i, FaceRotations[i].Pitch, FaceRotations[i].Yaw, FaceRotations[i].Roll));
 	}
+}
+
+// ===== HAND INTEGRATION =====
+
+UPlayerHandComponent* ADiceGameManager::GetPlayerHand()
+{
+	if (PlayerHandActor)
+	{
+		return PlayerHandActor->FindComponentByClass<UPlayerHandComponent>();
+	}
+	return nullptr;
+}
+
+UPlayerHandComponent* ADiceGameManager::GetEnemyHand()
+{
+	if (EnemyHandActor)
+	{
+		return EnemyHandActor->FindComponentByClass<UPlayerHandComponent>();
+	}
+	return nullptr;
+}
+
+void ADiceGameManager::TriggerPlayerChop()
+{
+	UPlayerHandComponent* Hand = GetPlayerHand();
+	if (Hand && Hand->FingersRemaining > 0)
+	{
+		bWaitingForChop = true;
+		Hand->ChopNextFinger();
+	}
+	else
+	{
+		// No hand or no fingers left, just continue
+		OnPlayerChopComplete();
+	}
+}
+
+void ADiceGameManager::TriggerEnemyChop()
+{
+	UPlayerHandComponent* Hand = GetEnemyHand();
+	if (Hand && Hand->FingersRemaining > 0)
+	{
+		bWaitingForChop = true;
+		Hand->ChopNextFinger();
+	}
+	else
+	{
+		// No hand or no fingers left, just continue
+		OnEnemyChopComplete();
+	}
+}
+
+void ADiceGameManager::OnPlayerChopComplete()
+{
+	bWaitingForChop = false;
+
+	// Check for game over (no fingers left = dead)
+	UPlayerHandComponent* Hand = GetPlayerHand();
+	if (Hand && Hand->FingersRemaining <= 0)
+	{
+		CurrentPhase = EGamePhase::GameOver;
+		return;
+	}
+
+	// Continue to next round - enemy throws automatically
+	CurrentRound++;
+	ClearAllDice();
+
+	EnemyResults.Empty();
+	PlayerResults.Empty();
+	PlayerDiceMatched.Empty();
+	EnemyDiceMatched.Empty();
+	PlayerDiceModified.Empty();
+	PlayerDiceAtModifier.Empty();
+	WaitTimer = 0.0f;
+	SelectionMode = 0;
+	SelectedDiceIndex = -1;
+
+	// Enemy throws new dice
+	CurrentPhase = EGamePhase::EnemyThrowing;
+	EnemyThrowDice();
+}
+
+void ADiceGameManager::OnEnemyChopComplete()
+{
+	bWaitingForChop = false;
+
+	// Check for game over
+	UPlayerHandComponent* Hand = GetEnemyHand();
+	if (Hand && Hand->FingersRemaining <= 0)
+	{
+		CurrentPhase = EGamePhase::GameOver;
+		return;
+	}
+
+	// Player won the round, continue to next round - enemy throws again
+	CurrentRound++;
+
+	CurrentPhase = EGamePhase::EnemyThrowing;
+	EnemyThrowDice();
 }

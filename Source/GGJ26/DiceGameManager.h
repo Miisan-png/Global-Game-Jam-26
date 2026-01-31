@@ -273,6 +273,18 @@ private:
 	ADiceModifier* SnapTargetModifier;
 	int32 SnapDiceIndex;
 
+	// Modifier effect animation
+	bool bDiceFlipping;
+	int32 FlipDiceIndex;
+	float FlipProgress;
+	FRotator FlipStartRot;
+	FRotator FlipTargetRot;
+
+	// Reroll from modifier
+	bool bRerollAfterSnap;
+	int32 RerollDiceIndex;
+	bool bRerollAll;
+
 	void OnMousePressed();
 	void OnMouseReleased();
 	void UpdateMouseInput();
@@ -280,9 +292,12 @@ private:
 	FVector GetMouseWorldPosition();
 	void StartDragging(ADice* Dice, int32 Index);
 	void StopDragging(bool bSuccess);
+	void PhysicsBounceBack();
 	void UpdateDragging();
 	void UpdateDiceReturn(float DeltaTime);
 	void UpdateModifierSnap(float DeltaTime);
+	void UpdateDiceFlip(float DeltaTime);
+	void StartDiceFlip(int32 DiceIndex, int32 NewValue);
 	void HighlightValidTargets();
 	void ClearAllHighlights();
 	void PlayMatchEffect(FVector Location);

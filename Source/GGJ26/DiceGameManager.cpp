@@ -108,6 +108,16 @@ ADiceGameManager::ADiceGameManager()
 	SnapTargetModifier = nullptr;
 	SnapDiceIndex = -1;
 
+	// Modifier effect animation
+	bDiceFlipping = false;
+	FlipDiceIndex = -1;
+	FlipProgress = 0.0f;
+
+	// Reroll from modifier
+	bRerollAfterSnap = false;
+	RerollDiceIndex = -1;
+	bRerollAll = false;
+
 	// Camera
 	CameraPanProgress = 0.0f;
 	bCameraPanning = false;
@@ -199,6 +209,7 @@ void ADiceGameManager::Tick(float DeltaTime)
 			UpdateMouseInput();
 			UpdateDiceReturn(DeltaTime);
 			UpdateModifierSnap(DeltaTime);
+			UpdateDiceFlip(DeltaTime);
 			UpdateCameraPan(DeltaTime);
 			break;
 
@@ -819,37 +830,68 @@ void ADiceGameManager::TryApplyModifier(ADiceModifier* Modifier, int32 DiceIndex
 	if (PlayerDiceMatched[DiceIndex]) return;
 	if (PlayerDiceModified[DiceIndex]) return;  // Already used a modifier
 
-	// Handle special reroll modifiers
+	int32 OldValue = PlayerResults[DiceIndex];
+	int32 NewValue = Modifier->ApplyToValue(OldValue);
+
+	// Check if modifier would have no effect or invalid
+	if (Modifier->ModifierType == EModifierType::MinusOne && OldValue <= 1)
+	{
+		// Can't go below 1 - reject
+		return;
+	}
+	if (Modifier->ModifierType == EModifierType::PlusOne && OldValue >= 6)
+	{
+		// Can't go above 6 - reject
+		return;
+	}
+	if (Modifier->ModifierType == EModifierType::PlusTwo && OldValue >= 6)
+	{
+		// Can't go above 6 - reject (even +1 would cap at 6)
+		return;
+	}
+
+	// Handle RE:1 - snap to modifier then throw
 	if (Modifier->ModifierType == EModifierType::RerollOne)
 	{
-		// RE:1 - Throw this single die again
-		RerollSingleDice(DiceIndex);
+		PlayerDiceModified[DiceIndex] = true;
+		PlayerDiceAtModifier[DiceIndex] = Modifier;
+		bRerollAfterSnap = true;
+		bRerollAll = false;
+		RerollDiceIndex = DiceIndex;
+		SnapDiceToModifier(DiceIndex, Modifier);
 		Modifier->UseModifier();
 		return;
 	}
-	else if (Modifier->ModifierType == EModifierType::RerollAll)
+
+	// Handle RE:ALL - reset camera and throw all
+	if (Modifier->ModifierType == EModifierType::RerollAll)
 	{
-		// RE:ALL - Throw all unmatched dice again
+		bRerollAfterSnap = true;
+		bRerollAll = true;
+		RerollDiceIndex = -1;
+		// Reset camera first, then throw
+		ResetCamera();
 		RerollAllUnmatchedDice();
 		Modifier->UseModifier();
 		return;
 	}
 
-	// Apply value-changing modifiers (+1, -1, +2, FLIP)
-	int32 OldValue = PlayerResults[DiceIndex];
-	int32 NewValue = Modifier->ApplyToValue(OldValue);
-
-	// Update the result
-	PlayerResults[DiceIndex] = NewValue;
-
-	// Update the dice visual
-	if (PlayerDice[DiceIndex])
+	// Handle FLIP - juicy flip animation
+	if (Modifier->ModifierType == EModifierType::Flip)
 	{
+		PlayerResults[DiceIndex] = NewValue;
 		PlayerDice[DiceIndex]->CurrentValue = NewValue;
-		UpdateDiceFaceDisplay(PlayerDice[DiceIndex], NewValue);
+		PlayerDiceModified[DiceIndex] = true;
+		PlayerDiceAtModifier[DiceIndex] = Modifier;
+		SnapDiceToModifier(DiceIndex, Modifier);
+		// Start flip after snap completes (handled in UpdateModifierSnap)
+		Modifier->UseModifier();
+		return;
 	}
 
-	// Mark as modified and snap to modifier
+	// Handle +1, -1, +2 - snap and rotate to new value
+	PlayerResults[DiceIndex] = NewValue;
+	PlayerDice[DiceIndex]->CurrentValue = NewValue;
 	PlayerDiceModified[DiceIndex] = true;
 	PlayerDiceAtModifier[DiceIndex] = Modifier;
 	SnapDiceToModifier(DiceIndex, Modifier);
@@ -910,20 +952,106 @@ void ADiceGameManager::UpdateModifierSnap(float DeltaTime)
 	// Smooth easing
 	float SmoothAlpha = EaseOutCubic(Alpha);
 
-	// Lerp position and rotation
+	// Lerp position only during snap (rotation happens after for FLIP)
 	FVector NewPos = FMath::Lerp(ReturnStartPos, ReturnTargetPos, SmoothAlpha);
-	FRotator NewRot = FMath::Lerp(ReturnStartRot, ReturnTargetRot, SmoothAlpha);
-
 	Dice->SetActorLocation(NewPos);
-	Dice->SetActorRotation(NewRot);
+
+	// Check if this is a FLIP modifier - don't rotate during snap
+	bool bIsFlip = (SnapTargetModifier && SnapTargetModifier->ModifierType == EModifierType::Flip);
+	if (!bIsFlip)
+	{
+		FRotator NewRot = FMath::Lerp(ReturnStartRot, ReturnTargetRot, SmoothAlpha);
+		Dice->SetActorRotation(NewRot);
+	}
 
 	if (ReturnProgress >= 1.0f)
 	{
 		Dice->SetActorLocation(ReturnTargetPos);
-		Dice->SetActorRotation(ReturnTargetRot);
+
+		int32 CompletedIndex = SnapDiceIndex;
+		ADiceModifier* CompletedModifier = SnapTargetModifier;
+
 		bDiceSnappingToModifier = false;
 		SnapTargetModifier = nullptr;
 		SnapDiceIndex = -1;
+
+		// After snap completes, handle special effects
+		if (bRerollAfterSnap && !bRerollAll && RerollDiceIndex == CompletedIndex)
+		{
+			// RE:1 - now throw this dice
+			bRerollAfterSnap = false;
+			RerollSingleDice(CompletedIndex);
+		}
+		else if (bIsFlip)
+		{
+			// FLIP - start juicy flip animation
+			StartDiceFlip(CompletedIndex, PlayerResults[CompletedIndex]);
+		}
+		else
+		{
+			// +1/-1/+2 - set final rotation
+			Dice->SetActorRotation(ReturnTargetRot);
+		}
+	}
+}
+
+void ADiceGameManager::StartDiceFlip(int32 DiceIndex, int32 NewValue)
+{
+	if (!PlayerDice.IsValidIndex(DiceIndex)) return;
+
+	ADice* Dice = PlayerDice[DiceIndex];
+	if (!Dice) return;
+
+	bDiceFlipping = true;
+	FlipDiceIndex = DiceIndex;
+	FlipProgress = 0.0f;
+	FlipStartRot = Dice->GetActorRotation();
+
+	// Target rotation shows the new (flipped) value
+	FlipTargetRot = GetRotationForFaceUp(NewValue);
+	FlipTargetRot.Yaw += LineupYaw;
+}
+
+void ADiceGameManager::UpdateDiceFlip(float DeltaTime)
+{
+	if (!bDiceFlipping) return;
+	if (!PlayerDice.IsValidIndex(FlipDiceIndex))
+	{
+		bDiceFlipping = false;
+		return;
+	}
+
+	ADice* Dice = PlayerDice[FlipDiceIndex];
+	if (!Dice)
+	{
+		bDiceFlipping = false;
+		return;
+	}
+
+	FlipProgress += DeltaTime * 2.5f;  // Juicy speed
+	float Alpha = FMath::Clamp(FlipProgress, 0.0f, 1.0f);
+
+	// Juicy flip - overshoot then settle
+	float FlipAlpha = EaseOutElastic(Alpha);
+
+	// Add a hop during flip
+	FVector BasePos = Dice->GetActorLocation();
+	float HopHeight = FMath::Sin(Alpha * PI) * 15.0f;
+	Dice->SetActorLocation(FVector(BasePos.X, BasePos.Y, PlayerDiceAtModifier[FlipDiceIndex]->GetActorLocation().Z + 20.0f + HopHeight));
+
+	// Rotate with extra spin for juice
+	FRotator CurrentRot = FMath::Lerp(FlipStartRot, FlipTargetRot, FlipAlpha);
+	// Add extra roll wobble
+	CurrentRot.Roll += FMath::Sin(Alpha * PI * 3.0f) * (1.0f - Alpha) * 15.0f;
+	Dice->SetActorRotation(CurrentRot);
+
+	if (FlipProgress >= 1.0f)
+	{
+		// Final position and rotation
+		Dice->SetActorLocation(FVector(BasePos.X, BasePos.Y, PlayerDiceAtModifier[FlipDiceIndex]->GetActorLocation().Z + 20.0f));
+		Dice->SetActorRotation(FlipTargetRot);
+		bDiceFlipping = false;
+		FlipDiceIndex = -1;
 	}
 }
 
@@ -934,24 +1062,28 @@ void ADiceGameManager::RerollSingleDice(int32 DiceIndex)
 	ADice* Dice = PlayerDice[DiceIndex];
 	if (!Dice) return;
 
-	// Re-enable physics and throw
+	// Clear modified state so it returns to lineup
+	PlayerDiceModified[DiceIndex] = false;
+	PlayerDiceAtModifier[DiceIndex] = nullptr;
+
+	// Re-enable physics and throw upward from current position
 	Dice->Mesh->SetSimulatePhysics(true);
 	Dice->bHasBeenThrown = false;
 
-	// Throw upward with random direction
+	// Throw upward with slight random direction
 	FVector ThrowDir = FVector(
-		FMath::RandRange(-0.3f, 0.3f),
-		FMath::RandRange(-0.3f, 0.3f),
+		FMath::RandRange(-0.2f, 0.2f),
+		FMath::RandRange(-0.2f, 0.2f),
 		1.0f
 	).GetSafeNormal();
 
-	Dice->Throw(ThrowDir, DiceThrowForce * 0.6f);
+	Dice->Throw(ThrowDir, DiceThrowForce * 0.5f);
 
-	// Mark that we need to wait for this dice to settle and update its value
+	// Mark that we need to wait for this dice to settle
 	bPlayerDiceSettled = false;
 	WaitTimer = 0.0f;
 
-	// Temporarily go back to settling phase to wait for the dice
+	// Go back to settling phase
 	CurrentPhase = EGamePhase::PlayerDiceSettling;
 }
 
@@ -959,25 +1091,33 @@ void ADiceGameManager::RerollAllUnmatchedDice()
 {
 	bool bAnyRerolled = false;
 
+	// Reset camera for the big throw
+	DeactivateModifiers();
+
 	for (int32 i = 0; i < PlayerDice.Num(); i++)
 	{
-		if (PlayerDiceMatched[i] || PlayerDiceModified[i]) continue;
+		// Skip matched dice only - modified dice get rerolled too!
+		if (PlayerDiceMatched[i]) continue;
 
 		ADice* Dice = PlayerDice[i];
 		if (!Dice) continue;
+
+		// Clear modified state
+		PlayerDiceModified[i] = false;
+		PlayerDiceAtModifier[i] = nullptr;
 
 		// Re-enable physics and throw
 		Dice->Mesh->SetSimulatePhysics(true);
 		Dice->bHasBeenThrown = false;
 
-		// Throw upward with random direction
+		// Throw upward with random spread - gambling style!
 		FVector ThrowDir = FVector(
-			FMath::RandRange(-0.3f, 0.3f),
-			FMath::RandRange(-0.3f, 0.3f),
+			FMath::RandRange(-0.4f, 0.4f),
+			FMath::RandRange(-0.4f, 0.4f),
 			1.0f
 		).GetSafeNormal();
 
-		Dice->Throw(ThrowDir, DiceThrowForce * 0.6f);
+		Dice->Throw(ThrowDir, DiceThrowForce * 0.7f);
 		bAnyRerolled = true;
 	}
 
@@ -986,6 +1126,8 @@ void ADiceGameManager::RerollAllUnmatchedDice()
 		// Go back to settling phase to wait for dice
 		bPlayerDiceSettled = false;
 		WaitTimer = 0.0f;
+		bRerollAfterSnap = false;
+		bRerollAll = false;
 		CurrentPhase = EGamePhase::PlayerDiceSettling;
 	}
 }
@@ -1164,7 +1306,7 @@ ADiceCamera* ADiceGameManager::FindCamera()
 void ADiceGameManager::OnMousePressed()
 {
 	if (CurrentPhase != EGamePhase::PlayerMatching) return;
-	if (bDiceReturning || bDiceSnappingToModifier) return;
+	if (bDiceReturning || bDiceSnappingToModifier || bDiceFlipping) return;
 
 	FVector HitLocation;
 	AActor* HitActor = GetActorUnderMouse(HitLocation);
@@ -1187,56 +1329,84 @@ void ADiceGameManager::OnMousePressed()
 void ADiceGameManager::OnMouseReleased()
 {
 	if (!bIsDragging || CurrentPhase != EGamePhase::PlayerMatching) return;
+	if (!DraggedDice) return;
 
-	FVector HitLocation;
-	AActor* HitActor = GetActorUnderMouse(HitLocation);
-
+	FVector DicePos = DraggedDice->GetActorLocation();
 	bool bSuccess = false;
 	bool bAppliedModifier = false;
 
-	if (HitActor)
+	// Check distance to modifiers first (more reliable than raycast)
+	if (!PlayerDiceModified[DraggedDiceIndex])
 	{
-		// Check if dropped on enemy dice for matching
-		ADice* HitDice = Cast<ADice>(HitActor);
-		if (HitDice)
+		float ClosestDist = 70.0f;  // Detection radius - generous for easy drops
+		ADiceModifier* ClosestMod = nullptr;
+
+		for (ADiceModifier* Mod : AllModifiers)
 		{
-			for (int32 i = 0; i < EnemyDice.Num(); i++)
+			if (Mod && !Mod->bIsUsed && Mod->bIsActive)
 			{
-				if (EnemyDice[i] == HitDice && !EnemyDiceMatched[i])
+				float Dist = FVector::Dist2D(DicePos, Mod->GetActorLocation());
+				if (Dist < ClosestDist)
 				{
-					TryMatchDice(DraggedDiceIndex, i);
-					bSuccess = PlayerDiceMatched[DraggedDiceIndex];
-					break;
+					ClosestDist = Dist;
+					ClosestMod = Mod;
 				}
 			}
 		}
 
-		// Check if dropped on modifier (only if not already modified)
-		ADiceModifier* HitMod = Cast<ADiceModifier>(HitActor);
-		if (HitMod && !HitMod->bIsUsed && HitMod->bIsActive)
+		if (ClosestMod)
 		{
-			// Check if this dice can use modifiers
-			if (!PlayerDiceModified[DraggedDiceIndex])
-			{
-				TryApplyModifier(HitMod, DraggedDiceIndex);
-				bAppliedModifier = true;
-				bSuccess = true;
-			}
+			TryApplyModifier(ClosestMod, DraggedDiceIndex);
+			bAppliedModifier = true;
+			bSuccess = true;
 		}
 	}
 
-	// If applied modifier, don't return dice to original position (it's snapping to modifier)
+	// Check distance to enemy dice for matching
+	if (!bAppliedModifier)
+	{
+		float ClosestDist = 60.0f;  // Match radius - generous
+		int32 ClosestEnemy = -1;
+
+		for (int32 i = 0; i < EnemyDice.Num(); i++)
+		{
+			if (EnemyDice[i] && !EnemyDiceMatched[i])
+			{
+				float Dist = FVector::Dist(DicePos, EnemyDice[i]->GetActorLocation());
+				if (Dist < ClosestDist)
+				{
+					ClosestDist = Dist;
+					ClosestEnemy = i;
+				}
+			}
+		}
+
+		if (ClosestEnemy >= 0)
+		{
+			TryMatchDice(DraggedDiceIndex, ClosestEnemy);
+			bSuccess = PlayerDiceMatched[DraggedDiceIndex];
+		}
+	}
+
+	// Handle result
 	if (bAppliedModifier)
 	{
+		// Modifier handles the snap animation
 		DraggedDice->SetHighlighted(false);
 		ClearAllHighlights();
 		bIsDragging = false;
 		DraggedDice = nullptr;
 		DraggedDiceIndex = -1;
 	}
+	else if (bSuccess)
+	{
+		// Match success - snap back
+		StopDragging(true);
+	}
 	else
 	{
-		StopDragging(bSuccess);
+		// No hit - physics bounce back
+		PhysicsBounceBack();
 	}
 }
 
@@ -1247,7 +1417,7 @@ void ADiceGameManager::UpdateMouseInput()
 		UpdateDragging();
 		HighlightValidTargets();
 	}
-	else if (!bDiceReturning && !bDiceSnappingToModifier)
+	else if (!bDiceReturning && !bDiceSnappingToModifier && !bDiceFlipping)
 	{
 		FVector HitLocation;
 		AActor* HitActor = GetActorUnderMouse(HitLocation);
@@ -1343,6 +1513,55 @@ void ADiceGameManager::StartDragging(ADice* Dice, int32 Index)
 	Dice->SetHighlighted(true);
 }
 
+void ADiceGameManager::PhysicsBounceBack()
+{
+	if (!DraggedDice)
+	{
+		bIsDragging = false;
+		return;
+	}
+
+	DraggedDice->SetHighlighted(false);
+	ClearAllHighlights();
+
+	// Enable physics for juicy bounce
+	DraggedDice->Mesh->SetSimulatePhysics(true);
+
+	// Calculate direction back to original position
+	FVector CurrentPos = DraggedDice->GetActorLocation();
+	FVector ToOrigin = OriginalDragPosition - CurrentPos;
+	float Distance = ToOrigin.Size();
+
+	// Give it a gentle push toward origin with some upward arc
+	if (Distance > 1.0f)
+	{
+		FVector ImpulseDir = ToOrigin.GetSafeNormal();
+		ImpulseDir.Z += 0.3f;  // Add upward arc
+		ImpulseDir.Normalize();
+
+		float ImpulseStrength = FMath::Clamp(Distance * 2.0f, 50.0f, 200.0f);
+		DraggedDice->Mesh->AddImpulse(ImpulseDir * ImpulseStrength, NAME_None, true);
+
+		// Add some spin for juice
+		FVector RandomSpin = FVector(
+			FMath::RandRange(-50.0f, 50.0f),
+			FMath::RandRange(-50.0f, 50.0f),
+			FMath::RandRange(-30.0f, 30.0f)
+		);
+		DraggedDice->Mesh->AddAngularImpulseInDegrees(RandomSpin, NAME_None, true);
+	}
+
+	// Start tracking return (we'll re-settle and re-lineup this dice)
+	bDiceReturning = true;
+	ReturningDice = DraggedDice;
+	ReturningDiceIndex = DraggedDiceIndex;
+	ReturnProgress = 0.0f;
+
+	bIsDragging = false;
+	DraggedDice = nullptr;
+	DraggedDiceIndex = -1;
+}
+
 void ADiceGameManager::StopDragging(bool bSuccess)
 {
 	if (!DraggedDice)
@@ -1417,31 +1636,43 @@ void ADiceGameManager::UpdateDiceReturn(float DeltaTime)
 {
 	if (!bDiceReturning || !ReturningDice) return;
 
+	// Check if physics is enabled (bounce back mode)
+	if (ReturningDice->Mesh->IsSimulatingPhysics())
+	{
+		// Wait for dice to settle
+		ReturnProgress += DeltaTime;
+
+		FVector Vel = ReturningDice->Mesh->GetPhysicsLinearVelocity();
+		FVector AngVel = ReturningDice->Mesh->GetPhysicsAngularVelocityInDegrees();
+
+		bool bSettled = (Vel.Size() < 5.0f && AngVel.Size() < 5.0f);
+		bool bTimedOut = (ReturnProgress > 3.0f);  // Max 3 seconds
+
+		if (bSettled || bTimedOut)
+		{
+			// Disable physics and smoothly move to lineup position
+			ReturningDice->Mesh->SetSimulatePhysics(false);
+
+			ReturnStartPos = ReturningDice->GetActorLocation();
+			ReturnStartRot = ReturningDice->GetActorRotation();
+			ReturnTargetPos = OriginalDragPosition;
+			ReturnTargetRot = OriginalDragRotation;
+			ReturnProgress = 0.0f;
+		}
+		return;
+	}
+
+	// Smooth animation back to lineup
 	ReturnProgress += DeltaTime * 4.0f;
 	float Alpha = FMath::Clamp(ReturnProgress, 0.0f, 1.0f);
 
-	// Elastic ease for juicy bounce
-	float PosAlpha = EaseOutElastic(Alpha);
-	float RotAlpha = EaseOutCubic(FMath::Clamp(Alpha * 1.5f, 0.0f, 1.0f));
+	// Smooth ease
+	float SmoothAlpha = EaseOutCubic(Alpha);
 
-	// Position with arc
-	FVector NewPos = FMath::Lerp(ReturnStartPos, ReturnTargetPos, PosAlpha);
-
-	// Add arc height
-	float ArcHeight = FMath::Sin(Alpha * PI) * 15.0f;
-	NewPos.Z += ArcHeight;
-
-	// Add initial velocity influence (fades out)
-	float VelInfluence = FMath::Max(0.0f, 0.3f - Alpha * 0.5f);
-	NewPos += ReturnVelocity * VelInfluence * DeltaTime;
+	FVector NewPos = FMath::Lerp(ReturnStartPos, ReturnTargetPos, SmoothAlpha);
+	FRotator NewRot = FMath::Lerp(ReturnStartRot, ReturnTargetRot, SmoothAlpha);
 
 	ReturningDice->SetActorLocation(NewPos);
-
-	// Rotation with wobble
-	FRotator NewRot = FMath::Lerp(ReturnStartRot, ReturnTargetRot, RotAlpha);
-	float Wobble = FMath::Sin(Alpha * PI * 5.0f) * (1.0f - Alpha) * 12.0f;
-	NewRot.Roll += Wobble;
-	NewRot.Pitch += Wobble * 0.7f;
 	ReturningDice->SetActorRotation(NewRot);
 
 	if (ReturnProgress >= 1.0f)

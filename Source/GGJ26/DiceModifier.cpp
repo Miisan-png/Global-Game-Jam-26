@@ -48,6 +48,12 @@ ADiceModifier::ADiceModifier()
 
 	ActivationProgress = 0.0f;
 	bActivating = false;
+
+	// Hover float
+	BasePosition = FVector::ZeroVector;
+	bBasePositionSet = false;
+	HoverProgress = 0.0f;
+	HoverPulse = 0.0f;
 }
 
 void ADiceModifier::BeginPlay()
@@ -58,6 +64,9 @@ void ADiceModifier::BeginPlay()
 	{
 		PlaneMesh->SetVisibility(false);
 	}
+	// Store base position for hover animation
+	BasePosition = GetActorLocation();
+	bBasePositionSet = true;
 	UpdateVisuals();
 }
 
@@ -97,6 +106,13 @@ void ADiceModifier::SetHighlighted(bool bHighlight)
 	if (bIsUsed || !bIsActive) return;
 
 	bIsHighlighted = bHighlight;
+
+	// Reset hover animation when unhighlighting
+	if (!bHighlight && HoverProgress > 0.0f)
+	{
+		// Let Tick handle smooth return
+	}
+
 	UpdateVisuals();
 }
 
@@ -159,6 +175,13 @@ bool ADiceModifier::RequiresDiceSelection()
 		   ModifierType == EModifierType::PlusTwo ||
 		   ModifierType == EModifierType::Flip ||
 		   ModifierType == EModifierType::RerollOne;
+}
+
+void ADiceModifier::UpdateBasePosition()
+{
+	BasePosition = GetActorLocation();
+	HoverProgress = 0.0f;
+	HoverPulse = 0.0f;
 }
 
 void ADiceModifier::UpdateVisuals()

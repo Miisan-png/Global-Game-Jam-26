@@ -72,6 +72,9 @@ public:
 	UFUNCTION(BlueprintCallable)
 	bool RequiresDiceSelection();
 
+	UFUNCTION(BlueprintCallable)
+	void UpdateBasePosition();
+
 private:
 	void UpdateVisuals();
 	FLinearColor BaseColor;
@@ -81,4 +84,10 @@ private:
 
 	float ActivationProgress;
 	bool bActivating;
+
+	// Hover float animation
+	FVector BasePosition;
+	bool bBasePositionSet;
+	float HoverProgress;
+	float HoverPulse;
 };

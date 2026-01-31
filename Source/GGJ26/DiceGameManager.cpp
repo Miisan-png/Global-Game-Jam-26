@@ -149,6 +149,14 @@ void ADiceGameManager::BeginPlay()
 	Super::BeginPlay();
 	SetupInputBindings();
 	FindAllModifiers();
+
+	// Store initial camera position
+	ADiceCamera* Cam = FindCamera();
+	if (Cam)
+	{
+		OriginalCameraLocation = Cam->GetActorLocation();
+		OriginalCameraRotation = Cam->GetActorRotation();
+	}
 }
 
 void ADiceGameManager::SetupInputBindings()
@@ -205,6 +213,9 @@ void ADiceGameManager::Tick(float DeltaTime)
 	DrawTurnText();
 	DrawHealthBars();
 
+	// Always update camera pan (so it works during all phases)
+	UpdateCameraPan(DeltaTime);
+
 	switch (CurrentPhase)
 	{
 		case EGamePhase::EnemyDiceSettling:
@@ -230,7 +241,6 @@ void ADiceGameManager::Tick(float DeltaTime)
 			UpdateModifierSnap(DeltaTime);
 			UpdateDiceFlip(DeltaTime);
 			UpdateMatchAnimation(DeltaTime);
-			UpdateCameraPan(DeltaTime);
 			UpdateModifierShuffle(DeltaTime);
 			// Check if waiting for camera to reset before RE:ALL
 			if (bWaitingForCameraToRerollAll)
@@ -247,11 +257,6 @@ void ADiceGameManager::Tick(float DeltaTime)
 			{
 				UpdateDiceLiftForReroll(DeltaTime);
 			}
-			break;
-
-		case EGamePhase::RoundEnd:
-		case EGamePhase::GameOver:
-			UpdateCameraPan(DeltaTime);
 			break;
 
 		default:
@@ -1687,8 +1692,8 @@ void ADiceGameManager::UpdateMouseInput()
 		FVector HitLocation;
 		AActor* HitActor = GetActorUnderMouse(HitLocation);
 
-		ClearAllHighlights();
-
+		// Find which player dice (if any) is being hovered
+		ADice* NewHoveredDice = nullptr;
 		if (HitActor)
 		{
 			ADice* HitDice = Cast<ADice>(HitActor);
@@ -1698,9 +1703,22 @@ void ADiceGameManager::UpdateMouseInput()
 				{
 					if (PlayerDice[i] == HitDice && !PlayerDiceMatched[i])
 					{
-						HitDice->SetHighlighted(true);
+						NewHoveredDice = HitDice;
 						break;
 					}
+				}
+			}
+		}
+
+		// Only update highlights if hovered dice changed
+		for (ADice* D : PlayerDice)
+		{
+			if (D && !D->bIsMatched)
+			{
+				bool bShouldHighlight = (D == NewHoveredDice);
+				if (D->bIsHighlighted != bShouldHighlight)
+				{
+					D->SetHighlighted(bShouldHighlight);
 				}
 			}
 		}
@@ -2591,12 +2609,13 @@ void ADiceGameManager::UpdateModifierShuffle(float DeltaTime)
 	// When shuffle is done
 	if (ModifierShuffleProgress >= 1.0f)
 	{
-		// Finalize positions
+		// Finalize positions and update base positions for hover
 		for (int32 i = 0; i < AvailableModifiers.Num(); i++)
 		{
 			if (ModifierTargetPositions.IsValidIndex(i))
 			{
 				AvailableModifiers[i]->SetActorLocation(ModifierTargetPositions[i]);
+				AvailableModifiers[i]->UpdateBasePosition();
 			}
 		}
 

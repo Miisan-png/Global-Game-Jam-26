@@ -70,6 +70,9 @@ public:
 	bool bIsMatched;
 
 	UPROPERTY(BlueprintReadOnly)
+	bool bIsBeingDragged;
+
+	UPROPERTY(BlueprintReadOnly)
 	bool bHasGlow;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
@@ -81,9 +84,16 @@ public:
 	// Allow external reset for re-throwing
 	bool bHasBeenThrown;
 
+	// Highlight sway
+	FRotator BaseHighlightRot;
+	FVector BaseHighlightPos;
+	bool bHighlightRotSet;
+
+	// Scale factor to normalize custom mesh to default cube size
+	float MeshNormalizeScale;
+
 private:
 	float HighlightPulse;
-	float MeshNormalizeScale;  // Scale factor to normalize custom mesh to default cube size
 
 	void SetupFaceTexts();
 	void DrawFaceNumbers();

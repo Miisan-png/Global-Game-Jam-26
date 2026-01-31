@@ -53,6 +53,11 @@ ADiceModifier::ADiceModifier()
 void ADiceModifier::BeginPlay()
 {
 	Super::BeginPlay();
+	// Hide the plane mesh - only show text
+	if (PlaneMesh)
+	{
+		PlaneMesh->SetVisibility(false);
+	}
 	UpdateVisuals();
 }
 
@@ -160,16 +165,20 @@ void ADiceModifier::UpdateVisuals()
 {
 	ModifierText->SetText(FText::FromString(GetModifierDisplayText()));
 
-	if (bIsUsed)
+	// Always keep plane hidden
+	if (PlaneMesh)
 	{
 		PlaneMesh->SetVisibility(false);
+	}
+
+	if (bIsUsed)
+	{
 		ModifierText->SetTextRenderColor(FColor(50, 50, 50, 128));
 	}
 	else if (!bIsActive)
 	{
 		float Grey = 80;
 		ModifierText->SetTextRenderColor(FColor(Grey, Grey, Grey, 255));
-		PlaneMesh->SetVisibility(true);
 	}
 	else if (bIsHighlighted)
 	{

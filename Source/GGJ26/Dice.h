@@ -63,6 +63,15 @@ public:
 	UFUNCTION(BlueprintCallable)
 	void SetFaceNumbersVisible(bool bVisible);
 
+	UFUNCTION(BlueprintCallable)
+	void SetTextSettings(float Size, float Offset);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
+	float FaceTextSize;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
+	float FaceTextOffset;
+
 	UPROPERTY(BlueprintReadOnly)
 	bool bIsHighlighted;
 
